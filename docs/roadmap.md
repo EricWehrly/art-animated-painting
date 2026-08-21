@@ -37,9 +37,22 @@ Traversal:
 - **Single toy now, shell extracted later.** The loop/params/scrub live in `src/shell/` as
   standalone modules with no toy-specific imports, so lifting them into a package when a
   second toy appears is a move, not a rewrite. See [toy-shell](work/toy-shell.md).
-- **Fixed camera.** It is a painting. A moving camera smears the accumulated surface;
-  parked behind a flag as a later experiment.
+- **Fixed camera *angle*, adjustable framing.** It is a painting — orbiting or rotating the
+  view would smear the accumulated surface once [paint-accumulator](work/paint-accumulator.md)
+  exists. That's the part that stays parked behind a flag. Distance (zoom) and look-at target
+  (pan) are a different thing — a viewfinder/composition choice with no accumulated paint to
+  smear yet — and are mouse-driven via `shell/camera-controls.ts`: wheel zooms centered on the
+  current target, left-drag pans, a "reset view" button returns to the home framing. Revisit
+  whether pan/zoom should stay live once accumulation is running, at P3 time.
 - **Decay is keyed to layer cadence, not render fps.** See [paint-accumulator](work/paint-accumulator.md).
+
+## Under consideration, not started
+
+- **A stroke/brush swatch mode** — a stripped-down canvas showing just strokes and their
+  variants (bristle texture, speckles, sizing) in isolation from the dancers, for faster
+  visual iteration on the paint itself. Raised while tuning stroke appearance against
+  reference photos; not yet built — the dancer-driven canvas has been enough to iterate on
+  so far, but may be worth it if that stops being true.
 
 ## Source data
 

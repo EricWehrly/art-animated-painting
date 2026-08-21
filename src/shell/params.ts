@@ -9,10 +9,15 @@ export interface ToyParams {
   reliefStrength: number;
   strokeWidthScale: number;
   strokeLengthScale: number;
-  /** World-space distance from the fixed camera to the dance floor — a static framing
-   * control, not an animated orbit, so it doesn't conflict with the "fixed camera" decision
-   * in docs/roadmap.md (nothing moves once you've dialed it in). */
+  /** World-space distance from the fixed camera to its look-at target. Primarily driven by
+   * mouse wheel (see shell/camera-controls.ts) — this slider mirrors that live value rather
+   * than being the primary way to set it. A viewfinder control, not an animated orbit, so it
+   * doesn't conflict with the "fixed camera" (angle) decision in docs/roadmap.md. */
   cameraDistance: number;
+  /** Look-at target, panned by mouse drag. Defaults to shell/canvas.ts's CAMERA_HOME_TARGET. */
+  targetX: number;
+  targetY: number;
+  targetZ: number;
   /** 0 disables the flung-droplet speckles entirely; scales speckle count. */
   speckleAmount: number;
 }
@@ -26,6 +31,9 @@ export const defaultParams: ToyParams = {
   strokeWidthScale: 1,
   strokeLengthScale: 1,
   cameraDistance: 55,
+  targetX: 0,
+  targetY: 15,
+  targetZ: 0,
   speckleAmount: 0.6,
 };
 
@@ -41,7 +49,9 @@ export function loadParamsFromHash(): ToyParams {
   }
 }
 
-function saveParamsToHash(params: ToyParams) {
+/** Exported so callers driving params outside a Tweakpane binding (e.g. mouse pan/zoom in
+ * camera-controls.ts) can still persist state to the URL hash the same way. */
+export function saveParamsToHash(params: ToyParams) {
   window.location.hash = encodeURIComponent(JSON.stringify(params));
 }
 
@@ -55,7 +65,7 @@ export function createParamsPanel(container: HTMLElement, params: ToyParams): Pa
   pane.addBinding(params, "reliefStrength", { min: 0, max: 40, step: 0.5 });
   pane.addBinding(params, "strokeWidthScale", { min: 0.2, max: 3, step: 0.05 });
   pane.addBinding(params, "strokeLengthScale", { min: 0.2, max: 3, step: 0.05 });
-  pane.addBinding(params, "cameraDistance", { min: 15, max: 120, step: 1 });
+  pane.addBinding(params, "cameraDistance", { min: 8, max: 150, step: 1, label: "zoom (distance)" });
   pane.addBinding(params, "speckleAmount", { min: 0, max: 2, step: 0.05 });
 
   pane.on("change", () => saveParamsToHash(params));

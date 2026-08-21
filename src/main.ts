@@ -1,7 +1,8 @@
 import * as THREE from "three";
-import { createScene } from "./shell/canvas";
+import { createScene, CAMERA_HOME_POSITION, CAMERA_HOME_TARGET } from "./shell/canvas";
+import { attachCameraControls } from "./shell/camera-controls";
 import { createTimeline } from "./shell/timeline";
-import { createParamsPanel, loadParamsFromHash, type ToyParams } from "./shell/params";
+import { createParamsPanel, loadParamsFromHash, saveParamsToHash, defaultParams, type ToyParams } from "./shell/params";
 import { capturePNG } from "./shell/capture";
 import { loadPoseCache } from "./pose/pose-cache";
 import { boneSegments } from "./pose/skeleton";
@@ -40,15 +41,39 @@ async function main() {
   const heightPass = createHeightPass(domElement.width, domElement.height);
   const shadingPass = createShadingPass();
 
-  // "Zoom" dollies the fixed camera along its original viewing ray rather than changing its
-  // angle — a static framing choice made once (or while paused, exploring), not an animated
-  // orbit, so it doesn't conflict with the "fixed camera" decision in docs/roadmap.md.
-  const lookAtTarget = new THREE.Vector3(0, 15, 0);
-  const cameraDir = camera.position.clone().sub(lookAtTarget).normalize();
-  function applyCameraDistance() {
-    camera.position.copy(lookAtTarget).addScaledVector(cameraDir, params.cameraDistance);
-    camera.lookAt(lookAtTarget);
+  let currentFrame = 0;
+
+  // Mouse wheel = zoom, centered on the current look-at target (the point in the middle of
+  // the view stays put as you zoom — that's what makes it "center zoom" rather than
+  // cursor-anchored zoom). Left-drag = pan. The viewing ANGLE never changes — see
+  // shell/canvas.ts — so this is a viewfinder control, not the animated camera the "fixed
+  // camera" roadmap decision is about.
+  const cameraTarget = new THREE.Vector3(params.targetX, params.targetY, params.targetZ);
+  const cameraDirection = CAMERA_HOME_POSITION.clone().sub(CAMERA_HOME_TARGET).normalize();
+  const controls = attachCameraControls({
+    camera,
+    domElement,
+    direction: cameraDirection,
+    target: cameraTarget,
+    distance: params.cameraDistance,
+    onChange: () => syncCameraParamsAndRerender(),
+  });
+
+  function syncCameraParamsAndRerender() {
+    params.cameraDistance = controls.distance;
+    params.targetX = cameraTarget.x;
+    params.targetY = cameraTarget.y;
+    params.targetZ = cameraTarget.z;
+    pane.refresh();
+    saveParamsToHash(params);
+    renderFrame(currentFrame);
   }
+
+  pane.addButton({ title: "reset view" }).on("click", () => {
+    cameraTarget.copy(CAMERA_HOME_TARGET);
+    controls.setDistance(defaultParams.cameraDistance);
+    syncCameraParamsAndRerender();
+  });
 
   function strokeStyleFor(dancerIndex: number): StrokeStyle {
     const hex = dancerIndex === 0 ? params.colorA : params.colorB;
@@ -76,8 +101,6 @@ async function main() {
   }
 
   function renderFrame(frame: number) {
-    applyCameraDistance();
-
     const allStrokes: Stroke[] = [];
     for (let dancerIndex = 0; dancerIndex < cache.header.dancers.length; dancerIndex++) {
       const emitters = generateEmitters(cache, bones, dancerIndex, frame, samplesPerBone);
@@ -92,8 +115,6 @@ async function main() {
     shadingPass.setReliefStrength(params.reliefStrength);
     shadingPass.render(renderer, heightPass.colorSumTexture, heightPass.heightSumTexture);
   }
-
-  let currentFrame = 0;
 
   // Resizing recreates the render targets at the new resolution, which clears their
   // contents — re-render the current frame immediately so the canvas doesn't go blank
@@ -112,10 +133,15 @@ async function main() {
     renderFrame(currentFrame);
   });
 
-  // Live-tweaking params (zoom, relief, colors, ...) needs its own re-render: renderFrame
-  // only otherwise runs on scrub/resize/playback ticks, so a paused param change would
-  // silently do nothing until the next one of those.
-  pane.on("change", () => renderFrame(currentFrame));
+  // Live-tweaking params (relief, colors, stroke sizing, the cameraDistance slider, ...)
+  // needs its own re-render: renderFrame only otherwise runs on scrub/resize/playback ticks,
+  // so a paused param change would silently do nothing until the next one of those. Also
+  // re-applies cameraDistance to the camera in case that's what changed — mouse wheel/drag
+  // go through camera-controls.ts directly and don't fire this (Tweakpane-only) listener.
+  pane.on("change", () => {
+    controls.setDistance(params.cameraDistance);
+    renderFrame(currentFrame);
+  });
 
   // Simple playback loop, independent of the LayerClock (that drives paint accumulation
   // once paint-accumulator lands; this is just scrubbing the pose for now).
