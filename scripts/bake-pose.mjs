@@ -1,7 +1,7 @@
 // Bakes two paired BVH trials (see docs/work/pose-pipeline.md) into a compact pose cache:
 // public/data/pose-cache.json (header) + public/data/pose-cache.bin (Float32Array positions).
 //
-// Usage: npm run bake -- --a=60_01 --b=61_01 --fps=30 --out=public/data
+// Usage: yarn bake --a=60_01 --b=61_01 --fps=30 --out=public/data
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { readFile } from "node:fs/promises";

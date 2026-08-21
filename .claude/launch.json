@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "art-animated-painting",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev"],
+      "runtimeExecutable": "yarn",
+      "runtimeArgs": ["dev"],
       "port": 5174
     }
   ]
