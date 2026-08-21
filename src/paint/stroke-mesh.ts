@@ -79,11 +79,21 @@ const strokeFragmentShader = /* glsl */ `
     float alpha = clamp(widthMask * endCap * bristle, 0.0, 1.0);
     if (alpha < 0.02) discard;
 
+    // A single flat color per stroke, varying only in coverage, is what read as "screen
+    // color" instead of paint — real pigment varies hair to hair. Reuse the bristle ridge
+    // pattern (ridge tops = more pigment loaded = brighter/richer; valleys = thinner) plus
+    // an independent fine-grain hash (per-hair jitter, decorrelated from the ridge geometry
+    // so it doesn't just look like the same pattern twice) to modulate value and saturation.
+    float grainHash = fract(sin(dot(vUv * vec2(311.7, 191.3) + vSeed, vec2(12.9898, 78.233))) * 43758.5453);
+    float grain = (grainHash - 0.5) * 0.22;
+    float pigmentLoad = mix(0.8, 1.2, bristle) + grain;
+    vec3 tintedColor = clamp(vColor * pigmentLoad, 0.0, 1.5);
+
     // Coverage-weighted additive accumulation: color and height both accumulate under a
     // single ADDITIVE blend state (see docs/work/impasto-shading.md status notes) — the
     // composite pass divides color-sum by coverage-sum to recover an averaged color. This
     // is the same pattern paint-accumulator will reuse for decay + splat.
-    gColorSum = vec4(vColor * alpha, alpha);
+    gColorSum = vec4(tintedColor * alpha, alpha);
     gHeightSum = vec4(alpha * vVolume, 0.0, 0.0, 0.0);
   }
 `;

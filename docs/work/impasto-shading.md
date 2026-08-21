@@ -116,3 +116,42 @@ matches the pre-fix baseline (2142 samples at cameraDistance 90); with defaults 
 35 through the actual Tweakpane DOM input (not just a reload) immediately re-rendered at
 10232 samples filling most of the frame — confirming the live param-change path fires
 correctly end to end, not just on load.
+
+### Round 3: it still reads as flat "screen color", not paint
+
+Feedback after zoom/pan landed: even up close, the surface still reads as flat fills, not
+oil paint. The real cause: every stroke had exactly **one** RGB value with only *coverage*
+(alpha) varying — dividing a flat premultiplied color by its own coverage in the composite
+pass exactly cancels the coverage term, so a stroke's interior was provably uniform in hue
+regardless of the bristle pattern. Real paint varies hair to hair; a flat fill under any
+lighting still reads as a flat fill.
+
+Three changes, in `stroke-mesh.ts` and `shading-pass.ts`:
+
+- **Per-fragment pigment variation.** The bristle ridge pattern now also modulates color
+  value (ridge tops = more pigment = brighter; valleys = thinner), plus an independent
+  fine-grain hash decorrelated from the ridge geometry (otherwise it's the same pattern
+  read twice, which doesn't look like independent pigment jitter).
+- **Height-driven thickness shading.** Paint color now responds to the height field itself,
+  not just to lighting normals — thin paint (`smoothstep(0.05, 0.85, h)`) shifts darker
+  toward the ground tone, thick/overlapped paint shifts brighter with a slight warm boost.
+  Previously height only ever affected the *normal* (lighting), never the base color, so
+  two areas with identical color but very different thickness looked identical up close.
+- **Textured ground instead of a flat fill.** A cheap procedural canvas-weave (screen-space,
+  driven by `gl_FragCoord`, not world UV, so it reads as fabric texture at any zoom level)
+  replaces the previously-uniform `uGroundColor`. This is a stand-in for real watercolor
+  paper (P5), not that — but a flat single-RGB ground was directly part of the "screen
+  color" complaint, especially once zoom made bare canvas fill more of the frame.
+
+Also tuned for more contrast: specular is now tinted toward the paint color (40% mix)
+instead of pure white — pure-white highlights read as glare/plastic rather than paint
+catching light. AO gained a second, wider sampling tap so shadowing between adjacent
+bristle ridges (not just single-texel neighbors) actually shows up, and its clamp ceiling
+raised (deeper max shadow). Default `reliefStrength` raised 14 → 22 (range extended to 60)
+as the primary "more crusty" dial now does more per unit.
+
+Verified in-browser: in a fully-interior patch of a stroke (every sampled pixel confirmed
+far from ground color, so no coverage-edge contamination), per-channel min/max range is now
+R 172–191, G 78–85, B 67–74 — real intra-stroke variation where the old code was
+mathematically guaranteed exactly uniform. Ground patches likewise show non-zero per-pixel
+variance where they were previously a single exact RGB value.

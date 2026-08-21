@@ -27,7 +27,7 @@ export const defaultParams: ToyParams = {
   colorB: "#3d6fc9",
   playing: false,
   layersPerSecond: 24,
-  reliefStrength: 14,
+  reliefStrength: 22,
   strokeWidthScale: 1,
   strokeLengthScale: 1,
   cameraDistance: 55,
@@ -62,7 +62,7 @@ export function createParamsPanel(container: HTMLElement, params: ToyParams): Pa
   pane.addBinding(params, "layersPerSecond", { min: 1, max: 60, step: 1 });
   pane.addBinding(params, "colorA");
   pane.addBinding(params, "colorB");
-  pane.addBinding(params, "reliefStrength", { min: 0, max: 40, step: 0.5 });
+  pane.addBinding(params, "reliefStrength", { min: 0, max: 60, step: 0.5 });
   pane.addBinding(params, "strokeWidthScale", { min: 0.2, max: 3, step: 0.05 });
   pane.addBinding(params, "strokeLengthScale", { min: 0.2, max: 3, step: 0.05 });
   pane.addBinding(params, "cameraDistance", { min: 8, max: 150, step: 1, label: "zoom (distance)" });
