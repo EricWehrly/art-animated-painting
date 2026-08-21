@@ -6,12 +6,20 @@ import { capturePNG } from "./shell/capture";
 import { loadPoseCache } from "./pose/pose-cache";
 import { boneSegments } from "./pose/skeleton";
 import { generateEmitters } from "./pose/emitters";
+import { generateStrokes, type Stroke, type StrokeStyle } from "./pose/strokes";
+import { createStrokeMesh } from "./paint/stroke-mesh";
+import { createHeightPass } from "./paint/height-pass";
+import { createShadingPass } from "./paint/shading-pass";
 
 async function main() {
   const app = document.getElementById("app");
   if (!app) throw new Error("missing #app container");
 
-  const { renderer, scene, camera, domElement } = createScene(app);
+  // The `scene` createScene() sets up goes unused here: strokes render into an offscreen
+  // pass scene owned by height-pass.ts, and shading-pass.ts renders straight to screen with
+  // its own full-screen-quad scene. createScene still gives us the renderer/camera/canvas.
+  const { renderer, camera, domElement } = createScene(app);
+
   const timeline = createTimeline(app);
   const params: ToyParams = loadParamsFromHash();
   createParamsPanel(app, params);
@@ -21,47 +29,59 @@ async function main() {
   const frameCount = cache.header.frameCount;
   timeline.setFrameCount(frameCount);
 
-  // P1 scaffolding: flat colored points per dancer, standing in for real strokes
-  // until impasto-shading (P2) and paint-accumulator (P3) land. See docs/work/pose-pipeline.md.
   const samplesPerBone = 4;
-  const pointsPerDancer = bones.length * samplesPerBone;
+  const strokesPerDancer = bones.length * samplesPerBone;
+  const maxStrokes = strokesPerDancer * cache.header.dancers.length;
 
-  const dancerColors = [params.colorA, params.colorB];
-  const dancerMeshes = cache.header.dancers.map((_, dancerIndex) => {
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(pointsPerDancer * 3), 3));
-    const material = new THREE.PointsMaterial({
-      color: new THREE.Color(dancerColors[dancerIndex]),
-      size: params.pointSize,
-      sizeAttenuation: true,
-    });
-    const points = new THREE.Points(geometry, material);
-    scene.add(points);
-    return points;
-  });
+  const strokeMesh = createStrokeMesh(maxStrokes);
+  const heightPass = createHeightPass(domElement.width, domElement.height);
+  const shadingPass = createShadingPass();
+
+  function strokeStyleFor(dancerIndex: number): StrokeStyle {
+    const hex = dancerIndex === 0 ? params.colorA : params.colorB;
+    const c = new THREE.Color(hex);
+    return {
+      color: [c.r, c.g, c.b],
+      lengthScale: 0.6 * params.strokeLengthScale,
+      minLength: 0.6,
+      maxLength: 6,
+      widthScale: 0.5 * params.strokeWidthScale,
+      volumeScale: 0.35,
+    };
+  }
 
   function renderFrame(frame: number) {
+    const allStrokes: Stroke[] = [];
     for (let dancerIndex = 0; dancerIndex < cache.header.dancers.length; dancerIndex++) {
       const emitters = generateEmitters(cache, bones, dancerIndex, frame, samplesPerBone);
-      const posAttr = dancerMeshes[dancerIndex].geometry.getAttribute("position") as THREE.BufferAttribute;
-      for (let i = 0; i < emitters.length; i++) {
-        const [x, y, z] = emitters[i].position;
-        posAttr.setXYZ(i, x, y, z);
-      }
-      posAttr.needsUpdate = true;
-      (dancerMeshes[dancerIndex].material as THREE.PointsMaterial).size = params.pointSize;
+      const strokes = generateStrokes(emitters, strokeStyleFor(dancerIndex));
+      allStrokes.push(...strokes);
     }
-    renderer.render(scene, camera);
+    strokeMesh.setStrokes(allStrokes);
+
+    heightPass.render(renderer, strokeMesh.mesh, camera);
+    shadingPass.setReliefStrength(params.reliefStrength);
+    shadingPass.render(renderer, heightPass.colorSumTexture, heightPass.heightSumTexture);
   }
 
   let currentFrame = 0;
+
+  // Resizing recreates the render targets at the new resolution, which clears their
+  // contents — re-render the current frame immediately so the canvas doesn't go blank
+  // until the next scrub/playback tick.
+  function resize() {
+    heightPass.setSize(domElement.width, domElement.height);
+    shadingPass.setResolution(domElement.width, domElement.height);
+    renderFrame(currentFrame);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
   timeline.onSeek((frame) => {
     currentFrame = frame;
     params.playing = false;
     renderFrame(currentFrame);
   });
-
-  renderFrame(currentFrame);
 
   // Simple playback loop, independent of the LayerClock (that drives paint accumulation
   // once paint-accumulator lands; this is just scrubbing the pose for now).

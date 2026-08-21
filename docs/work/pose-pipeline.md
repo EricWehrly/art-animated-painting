@@ -74,9 +74,13 @@ rather than vendoring BVH text, per the "why bake" rationale above. Default bake
 (60_01/61_01 @ 30fps) produces 561 frames x 38 joints x 2 dancers, ~500 KB.
 
 Runtime `src/pose/pose-cache.ts`, `skeleton.ts`, `emitters.ts` are written — emitters sample
-points along each bone with position + per-frame velocity delta. **Not yet done: the "Strokes"
-section above** — emitters currently render directly as flat `THREE.Points` in `main.ts` as
-a P1 placeholder; converting them into actual stroke instances (length/angle/width/volume
-from velocity, baked into one interleaved buffer with per-frame offsets) is the remaining
-pose-pipeline work, and is what [impasto-shading](impasto-shading.md) and
-[paint-accumulator](paint-accumulator.md) will consume.
+points along each bone with position + per-frame velocity delta. `src/pose/strokes.ts` now
+converts emitters into stroke instances (length ∝ speed, width ∝ bone thickness, volume ∝
+speed) — the "Strokes" section above, done as CPU data prep with no GPU dependency.
+
+**Deliberate deviation from the original plan:** strokes are generated per-frame at scrub/
+playback time from the cached pose data, not baked into one big offline GPU buffer across all
+frames. At ~300 strokes/frame this recompute is trivial CPU work; the "bake every frame's
+strokes into one instanced buffer" idea remains the right move once
+[paint-accumulator](paint-accumulator.md) needs to replay a K-layer history window fast for
+scrubbing — revisit then rather than building it speculatively now.
