@@ -69,11 +69,22 @@ const quadFragmentShader = /* glsl */ `
     vec3 viewDir = vec3(0.0, 0.0, 1.0);
     vec3 halfDir = normalize(lightDir + viewDir);
 
-    float diff = max(dot(normal, lightDir), 0.0);
-    float spec = pow(max(dot(normal, halfDir), 0.0), 40.0);
-    // Real paint highlights pick up some of the pigment underneath, not pure white — a fully
+    float diffRaw = max(dot(normal, lightDir), 0.0);
+    // A smooth Lambertian gradient reads as glossy/plastic under a single key light — real
+    // matte paint's lit/shadow transition is closer to a few discrete bands (facets catching
+    // or missing the light) than a continuous ramp. Partial banding (not full toon, which
+    // looked too flat/graphic) keeps the shape readable while killing the smooth-plastic look.
+    float diffBanded = floor(diffRaw * 4.0 + 0.5) / 4.0;
+    float diff = mix(diffRaw, diffBanded, 0.45);
+    // Wider, weaker lobe than a glossy material: with the ridge/lump height detail added in
+    // stroke-mesh.ts, many small facets now catch the light independently, so highlights
+    // already scatter into glints on their own — the lobe itself no longer needs to be tight
+    // and bright to read as "wet", and a tight bright lobe was what made a single dome read
+    // as a glowing glass rod instead of paint.
+    float spec = pow(max(dot(normal, halfDir), 0.0), 18.0);
+    // Real paint highlights pick up most of the pigment underneath, not pure white — a fully
     // white specular is what reads as "plastic" or "screen glare" rather than paint.
-    vec3 specTint = mix(vec3(1.0), paintColor, 0.4);
+    vec3 specTint = mix(vec3(1.0), paintColor, 0.6);
 
     float variance = abs(hL - h) + abs(hR - h) + abs(hU - h) + abs(hD - h);
     float wideVariance = abs(hL2 - h) + abs(hR2 - h) + abs(hU2 - h) + abs(hD2 - h);
@@ -87,7 +98,7 @@ const quadFragmentShader = /* glsl */ `
     float impasto = smoothstep(0.9, 2.2, h);
     vec3 thickPaint = paintColor * mix(0.8, 1.25, thickness) + vec3(0.08) * impasto;
 
-    vec3 lit = thickPaint * (0.3 + 0.75 * diff) * ao + specTint * spec * 1.1;
+    vec3 lit = thickPaint * (0.3 + 0.75 * diff) * ao + specTint * spec * 0.55;
 
     // Cheap procedural canvas weave (screen-space, so it reads as fabric texture at any
     // zoom rather than a flat fill) — this is what mostly targets "still reads as screen

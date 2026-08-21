@@ -202,3 +202,49 @@ reference photos' matte, textured impasto (currently reads a bit glowy/specular-
 and the bristle texture is now subtle compared to the dome), which is the next thing to
 tune, but the structural bug — no height signal reaching the shading pass at all — is
 resolved.
+
+### Round 5: domed strokes still read as a glowing tube, not matte paint
+
+User feedback against the reference photos again, this time on the fixed-relief render: it
+"doesn't look anything like" real oil brush strokes — screenshots showed saturated,
+soft-edged shapes with one bright glowing line down the center, closer to a lit glass/neon
+rod than paint. Researched real-time painterly-shading technique (see sources below) rather
+than continuing to guess; one write-up describing the same symptom named the actual cause: a
+smooth single-surface stroke has exactly one normal direction along its ridge line, so it
+can only ever produce one continuous specular highlight, no matter how lighting is tuned.
+Real impasto has no single surface direction — it's built from many small ridge-top facets,
+each catching the light independently, so highlights scatter into glints rather than
+tracing a line.
+
+Changes, in `stroke-mesh.ts` and `shading-pass.ts`:
+
+- **Baked the bristle ridge pattern into height, not just alpha/color.** Previously the
+  ridge pattern only modulated coverage and pigment tint — the height field itself was a
+  perfectly smooth dome, so central-difference normals never saw any ridge structure at all.
+  Now `heightProfile` includes the same ridge signal (scaled down, `* 0.7`), so the normals
+  driving specular actually vary facet to facet.
+- **Widened ridge spacing** (`ridgeSpacing` 0.18 → 0.42, fewer cycles across a stroke's
+  width) — reference photos show a handful of broad knife-daub planes catching light
+  distinctly, not fine parallel hatching.
+- **Added a coarse two-bump "lump"** multiplying the crown, so a stroke's cross-section
+  silhouette isn't a perfectly symmetric tube — paint piles unevenly under a loaded brush.
+- **Ragged edges.** Both the width falloff and the tip/tail caps now wobble via a
+  low-frequency (not per-pixel, which would alias into static) sine perturbation, so stroke
+  boundaries look torn/dragged instead of a clean mechanical silhouette.
+- **Toned down the specular lobe** (exponent 40 → 18, intensity roughly halved, tint shifted
+  further toward pigment color, 40% → 60%) and **partially quantized the diffuse response**
+  (blended 45% toward a 4-band toon step) — a smooth Lambertian gradient plus a
+  tight bright lobe is what reads as glossy plastic; real matte paint's lit/shadow transition
+  is closer to a few discrete facet-bands.
+
+Sources consulted: a [stylized paint shader breakdown](https://cyn-prod.com/stylized-paint-shader-breakdown)
+describing randomized per-stroke normals and toon-stepped (not smooth) diffuse as the fix for
+the same "glossy/plastic" symptom. (A second search hit, Maxime Heckel's painterly-shaders
+post, turned out to cover a Kuwahara post-filter approach — a different technique, not
+adopted here.)
+
+Verified visually on both the swatch canvas and the real dance scene: the single glowing
+centerline is gone, replaced by scattered highlight breakup along wider, chunkier ridges,
+with visibly torn stroke edges. Not yet a full match to the reference photos' broad flat
+knife-daub facets — still reads more like directional hatching than distinct overlapping
+daubs — flagged as the next tuning target, not treated as done.

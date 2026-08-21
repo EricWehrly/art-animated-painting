@@ -47,17 +47,32 @@ const strokeVertexShader = /* glsl */ `
 // height pass always agree on where a stroke actually is.
 const strokeShapeGLSL = /* glsl */ `
   float across = abs(vUv.y - 0.5) * 2.0; // 0 at center, 1 at edge
-  float widthMask = 1.0 - smoothstep(0.55, 1.0, across);
-
   float along = vUv.x; // 0..1 along stroke length
-  float endCap = smoothstep(0.0, 0.12, along) * (1.0 - smoothstep(0.88, 1.0, along));
+
+  // A perfectly smooth-sided stroke reads as a mechanical decal — real paint applied with a
+  // loaded brush or knife tears unevenly along its edge instead of stopping on a clean line.
+  // Low-frequency wobble (a handful of bumps along the stroke's length, not per-pixel noise,
+  // which would just alias into static) perturbs where the width falloff starts.
+  float tearPhase = along * 9.0 + vSeed * 13.0;
+  float tear = sin(tearPhase) * 0.5 + sin(tearPhase * 2.3 + vSeed * 5.0) * 0.3;
+  float edgeStart = clamp(0.5 + 0.16 * tear, 0.15, 0.7);
+  float widthMask = 1.0 - smoothstep(edgeStart, edgeStart + 0.38, across);
+
+  // Same idea applied to the tip/tail so the stroke's ends look dragged/lifted-off rather
+  // than perfectly rounded caps.
+  float capTear = 0.5 + 0.5 * sin(vUv.y * 7.0 + vSeed * 9.0);
+  float capStart = mix(0.0, 0.05, capTear);
+  float capEnd = mix(0.84, 0.94, capTear);
+  float endCap = smoothstep(capStart, capStart + 0.1, along) * (1.0 - smoothstep(capEnd, capEnd + 0.08, along));
 
   // Bristle ridges at a fixed WORLD-space spacing (not a fixed count across the UV range) —
   // a fixed cycle count aliased badly on narrow strokes, which is what read as "pixelly":
   // dozens of ridge cycles were being crammed into a couple of screen pixels. Two
   // frequencies beating against each other (not one clean sine) break the perfectly regular
-  // "barcode" look a single frequency gives — real bristle spacing isn't uniform.
-  float ridgeSpacing = 0.18;
+  // "barcode" look a single frequency gives — real bristle spacing isn't uniform. Widened
+  // from the original 0.18 to give fewer, broader facets — reference photos show chunky
+  // knife-daub planes catching light distinctly, not fine parallel hatching.
+  float ridgeSpacing = 0.42;
   float cycles = min(vWidth / ridgeSpacing, 40.0);
   float wave1 = vUv.y * cycles * 6.28318 + sin(vUv.x * 6.28318 + vSeed * 3.0) * 0.6 + vSeed * 11.0;
   float wave2 = vUv.y * cycles * 1.7 * 6.28318 + vSeed * 7.0;
@@ -79,10 +94,28 @@ const strokeShapeGLSL = /* glsl */ `
   // curve across, only the fine bristle ripples, which read as thin mechanical stripes with
   // nothing underneath them. A cosine dome gives every stroke a real rounded ridge — the
   // single highest-impact change for making this look like a bead of paint, not a flat
-  // decal — plus a slow along-length undulation so the ridge crest isn't perfectly straight.
+  // decal. Along-length undulation (so the ridge crest isn't perfectly straight) comes from
+  // 'lump', below.
   float crown = cos(clamp(across, 0.0, 1.0) * 1.5707963);
-  float crownWaver = 0.85 + 0.15 * sin(along * 8.0 + vSeed * 5.0);
-  float heightProfile = endCap * crown * crownWaver;
+
+  // A perfectly smooth dome only ever produces ONE continuous specular highlight running
+  // straight down its centerline, no matter how the light is tuned — every point along that
+  // line shares the same normal direction. That single glowing line is exactly what read as
+  // a glass/neon tube rather than paint: real impasto has no single normal direction, it has
+  // hundreds of small ridge-top facets each catching the light differently, so highlights
+  // scatter into glints instead of tracing one smooth curve. Bake the SAME bristle ridge
+  // pattern already used for alpha/color into the height itself (not just a color tint) so
+  // central-difference normals actually see that ridge structure.
+  float ridgeHeight = (rawBristle - 0.5) * bristleAmp;
+
+  // A second, much coarser two-frequency lump (a couple of piled bumps per stroke, not a
+  // uniform tube) breaks the dome's cross-section symmetry the way a loaded brush or palette
+  // knife actually deposits paint unevenly along a stroke, rather than extruding one constant
+  // profile.
+  float lumpPhase = along * 5.0 + vSeed * 17.0;
+  float lump = 0.78 + 0.22 * sin(lumpPhase) * sin(lumpPhase * 0.63 + vSeed * 4.0);
+
+  float heightProfile = endCap * crown * (lump + ridgeHeight * 0.7);
 `;
 
 const colorFragmentShader = /* glsl */ `
