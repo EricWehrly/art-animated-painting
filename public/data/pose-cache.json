@@ -1,0 +1,210 @@
+{
+  "fps": 30,
+  "frameCount": 561,
+  "jointCount": 38,
+  "joints": [
+    {
+      "name": "Hips",
+      "parentIndex": -1,
+      "isEndSite": false
+    },
+    {
+      "name": "LHipJoint",
+      "parentIndex": 0,
+      "isEndSite": false
+    },
+    {
+      "name": "LeftUpLeg",
+      "parentIndex": 1,
+      "isEndSite": false
+    },
+    {
+      "name": "LeftLeg",
+      "parentIndex": 2,
+      "isEndSite": false
+    },
+    {
+      "name": "LeftFoot",
+      "parentIndex": 3,
+      "isEndSite": false
+    },
+    {
+      "name": "LeftToeBase",
+      "parentIndex": 4,
+      "isEndSite": false
+    },
+    {
+      "name": "LeftToeBase_End",
+      "parentIndex": 5,
+      "isEndSite": true
+    },
+    {
+      "name": "RHipJoint",
+      "parentIndex": 0,
+      "isEndSite": false
+    },
+    {
+      "name": "RightUpLeg",
+      "parentIndex": 7,
+      "isEndSite": false
+    },
+    {
+      "name": "RightLeg",
+      "parentIndex": 8,
+      "isEndSite": false
+    },
+    {
+      "name": "RightFoot",
+      "parentIndex": 9,
+      "isEndSite": false
+    },
+    {
+      "name": "RightToeBase",
+      "parentIndex": 10,
+      "isEndSite": false
+    },
+    {
+      "name": "RightToeBase_End",
+      "parentIndex": 11,
+      "isEndSite": true
+    },
+    {
+      "name": "LowerBack",
+      "parentIndex": 0,
+      "isEndSite": false
+    },
+    {
+      "name": "Spine",
+      "parentIndex": 13,
+      "isEndSite": false
+    },
+    {
+      "name": "Spine1",
+      "parentIndex": 14,
+      "isEndSite": false
+    },
+    {
+      "name": "Neck",
+      "parentIndex": 15,
+      "isEndSite": false
+    },
+    {
+      "name": "Neck1",
+      "parentIndex": 16,
+      "isEndSite": false
+    },
+    {
+      "name": "Head",
+      "parentIndex": 17,
+      "isEndSite": false
+    },
+    {
+      "name": "Head_End",
+      "parentIndex": 18,
+      "isEndSite": true
+    },
+    {
+      "name": "LeftShoulder",
+      "parentIndex": 15,
+      "isEndSite": false
+    },
+    {
+      "name": "LeftArm",
+      "parentIndex": 20,
+      "isEndSite": false
+    },
+    {
+      "name": "LeftForeArm",
+      "parentIndex": 21,
+      "isEndSite": false
+    },
+    {
+      "name": "LeftHand",
+      "parentIndex": 22,
+      "isEndSite": false
+    },
+    {
+      "name": "LeftFingerBase",
+      "parentIndex": 23,
+      "isEndSite": false
+    },
+    {
+      "name": "LeftHandIndex1",
+      "parentIndex": 24,
+      "isEndSite": false
+    },
+    {
+      "name": "LeftHandIndex1_End",
+      "parentIndex": 25,
+      "isEndSite": true
+    },
+    {
+      "name": "LThumb",
+      "parentIndex": 23,
+      "isEndSite": false
+    },
+    {
+      "name": "LThumb_End",
+      "parentIndex": 27,
+      "isEndSite": true
+    },
+    {
+      "name": "RightShoulder",
+      "parentIndex": 15,
+      "isEndSite": false
+    },
+    {
+      "name": "RightArm",
+      "parentIndex": 29,
+      "isEndSite": false
+    },
+    {
+      "name": "RightForeArm",
+      "parentIndex": 30,
+      "isEndSite": false
+    },
+    {
+      "name": "RightHand",
+      "parentIndex": 31,
+      "isEndSite": false
+    },
+    {
+      "name": "RightFingerBase",
+      "parentIndex": 32,
+      "isEndSite": false
+    },
+    {
+      "name": "RightHandIndex1",
+      "parentIndex": 33,
+      "isEndSite": false
+    },
+    {
+      "name": "RightHandIndex1_End",
+      "parentIndex": 34,
+      "isEndSite": true
+    },
+    {
+      "name": "RThumb",
+      "parentIndex": 32,
+      "isEndSite": false
+    },
+    {
+      "name": "RThumb_End",
+      "parentIndex": 36,
+      "isEndSite": true
+    }
+  ],
+  "dancers": [
+    {
+      "id": "A",
+      "trial": "60_01",
+      "floatOffset": 0
+    },
+    {
+      "id": "B",
+      "trial": "61_01",
+      "floatOffset": 63954
+    }
+  ],
+  "units": "bvh-native (CMU mocap; consumers should normalize scale)"
+}
