@@ -77,3 +77,42 @@ Verified via pixel readback in-browser (no working screenshot tool in this envir
 ground color reads correctly post-gamma-fix, painted pixels show real color variation
 (up to full saturation, not a uniform wash), and the painted region's screen-space bounding
 box tracks the scrub position and shrinks/shifts frame-to-frame as the pose changes.
+
+### Round 2: brush texture, directionality, speckles
+
+User feedback against reference photos (thick ridged impasto brushwork; a Pollock-style
+flung/dripped piece) called out three problems: strokes read as "pixelly" rather than
+brushed, not enough directionality, and no speckle/spatter from the fling itself. Root
+causes and fixes:
+
+- **Bristle aliasing.** The ridge pattern used a fixed cycle count across UV space
+  regardless of a stroke's actual on-screen width — on narrow strokes that crammed dozens
+  of cycles into a couple of screen pixels, aliasing into visual noise (the "pixelly" look).
+  Fixed in `stroke-mesh.ts`: ridge spacing is now fixed in *world* units (`vWidth` is passed
+  as a varying), and ridge contrast fades out via `fwidth(phase)` once its on-screen
+  frequency exceeds what a pixel can resolve, instead of letting it alias.
+- **Noisy direction.** `emitters.ts` computed velocity as a one-sided finite difference
+  (frame vs. frame−1). For slow bones the per-frame delta is tiny, so that difference was
+  dominated by resample noise — strokes on slow-moving limbs had essentially random
+  orientation frame to frame. Switched to a true central difference (frame+1 vs. frame−1)/2,
+  which is measurably smoother.
+- **No speckles.** Added `generateSpeckles()` in `pose/strokes.ts` — small, nearly-round
+  Stroke instances flung beyond a fast emitter's tip, count and scatter radius scaling with
+  speed. Deliberately reuses the *exact same* Stroke type and stroke-mesh rendering as main
+  strokes (a speckle is just a small stroke), so no new geometry or shader was needed.
+  Speckle placement is seeded deterministically from `(frame, emitter index, speckle index)`
+  via a GLSL-style sine hash — otherwise re-rendering the same paused frame on every param
+  tweak would make the speckles jump around, which read as jittery rather than painted.
+
+Also added, since testing the above required it: a `cameraDistance` param that dollies the
+fixed camera along its original viewing ray (angle unchanged, so it doesn't reopen the
+"fixed camera" decision — nothing moves once dialed in) for actually seeing stroke detail
+up close, and a live re-render on any param change while paused (previously a paused param
+tweak did nothing until the next scrub/resize/playback tick).
+
+Verified in-browser: with the same camera and speckles disabled, painted-pixel coverage
+matches the pre-fix baseline (2142 samples at cameraDistance 90); with defaults restored
+(closer zoom, speckles on) coverage rises to 6947; live-dragging the zoom control down to
+35 through the actual Tweakpane DOM input (not just a reload) immediately re-rendered at
+10232 samples filling most of the frame — confirming the live param-change path fires
+correctly end to end, not just on load.

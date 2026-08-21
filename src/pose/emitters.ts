@@ -37,6 +37,10 @@ export function generateEmitters(
         parentNow[2] + (childNow[2] - parentNow[2]) * t,
       ];
 
+      // True central difference (frame-1 to frame+1, not frame-1 to frame) — noticeably
+      // less noisy than a one-sided difference, which matters here: slow bones have tiny
+      // per-frame deltas, and finite-difference noise on those deltas was showing up as
+      // incoherent stroke orientation ("pixelly" strokes with no clear direction).
       const parentPrev = jointWorldPosition(cache, dancerIndex, frame - 1, bone.parentIndex);
       const childPrev = jointWorldPosition(cache, dancerIndex, frame - 1, bone.childIndex);
       const prevPosition: [number, number, number] = [
@@ -45,9 +49,21 @@ export function generateEmitters(
         parentPrev[2] + (childPrev[2] - parentPrev[2]) * t,
       ];
 
+      const parentNext = jointWorldPosition(cache, dancerIndex, frame + 1, bone.parentIndex);
+      const childNext = jointWorldPosition(cache, dancerIndex, frame + 1, bone.childIndex);
+      const nextPosition: [number, number, number] = [
+        parentNext[0] + (childNext[0] - parentNext[0]) * t,
+        parentNext[1] + (childNext[1] - parentNext[1]) * t,
+        parentNext[2] + (childNext[2] - parentNext[2]) * t,
+      ];
+
       emitters.push({
         position,
-        velocity: [position[0] - prevPosition[0], position[1] - prevPosition[1], position[2] - prevPosition[2]],
+        velocity: [
+          (nextPosition[0] - prevPosition[0]) / 2,
+          (nextPosition[1] - prevPosition[1]) / 2,
+          (nextPosition[2] - prevPosition[2]) / 2,
+        ],
         thickness: bone.thickness,
         t,
       });

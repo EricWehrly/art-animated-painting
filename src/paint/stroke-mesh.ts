@@ -18,6 +18,7 @@ const strokeVertexShader = /* glsl */ `
   out vec3 vColor;
   out float vVolume;
   out float vSeed;
+  out float vWidth;
 
   void main() {
     vec3 viewCenter = (modelViewMatrix * vec4(iCenter, 1.0)).xyz;
@@ -37,6 +38,7 @@ const strokeVertexShader = /* glsl */ `
     vColor = iColor;
     vVolume = iVolume;
     vSeed = iSeed;
+    vWidth = iWidth;
   }
 `;
 
@@ -47,6 +49,7 @@ const strokeFragmentShader = /* glsl */ `
   in vec3 vColor;
   in float vVolume;
   in float vSeed;
+  in float vWidth;
 
   layout(location = 0) out vec4 gColorSum;
   layout(location = 1) out vec4 gHeightSum;
@@ -58,8 +61,20 @@ const strokeFragmentShader = /* glsl */ `
     float along = vUv.x; // 0..1 along stroke length
     float endCap = smoothstep(0.0, 0.12, along) * (1.0 - smoothstep(0.88, 1.0, along));
 
-    float bristle = 0.5 + 0.5 * sin(vUv.y * 26.0 + vSeed * 19.0);
-    bristle = mix(1.0, bristle, 0.55);
+    // Bristle ridges at a fixed WORLD-space spacing (not a fixed count across the UV
+    // range) — a fixed cycle count aliased badly on narrow strokes, which is what read as
+    // "pixelly": dozens of ridge cycles were being crammed into a couple of screen pixels.
+    // A little along-length wave breaks the ridges from perfectly straight into the slightly
+    // wavering streaks real bristles leave.
+    float ridgeSpacing = 0.18;
+    float cycles = min(vWidth / ridgeSpacing, 40.0);
+    float phase = vUv.y * cycles * 6.28318 + sin(vUv.x * 6.28318 + vSeed * 3.0) * 0.6 + vSeed * 11.0;
+
+    // Fade the ridge pattern out once its on-screen frequency exceeds what this pixel can
+    // resolve (screen-space derivative of the phase), instead of letting it alias into noise.
+    float phaseDeriv = fwidth(phase);
+    float bristleAmp = clamp(1.0 - phaseDeriv / 3.14159, 0.0, 1.0);
+    float bristle = mix(1.0, 0.5 + 0.5 * sin(phase), 0.6 * bristleAmp);
 
     float alpha = clamp(widthMask * endCap * bristle, 0.0, 1.0);
     if (alpha < 0.02) discard;

@@ -9,6 +9,12 @@ export interface ToyParams {
   reliefStrength: number;
   strokeWidthScale: number;
   strokeLengthScale: number;
+  /** World-space distance from the fixed camera to the dance floor — a static framing
+   * control, not an animated orbit, so it doesn't conflict with the "fixed camera" decision
+   * in docs/roadmap.md (nothing moves once you've dialed it in). */
+  cameraDistance: number;
+  /** 0 disables the flung-droplet speckles entirely; scales speckle count. */
+  speckleAmount: number;
 }
 
 export const defaultParams: ToyParams = {
@@ -19,6 +25,8 @@ export const defaultParams: ToyParams = {
   reliefStrength: 14,
   strokeWidthScale: 1,
   strokeLengthScale: 1,
+  cameraDistance: 55,
+  speckleAmount: 0.6,
 };
 
 /** Reads params from the URL hash (if present), falling back to defaults. */
@@ -47,6 +55,8 @@ export function createParamsPanel(container: HTMLElement, params: ToyParams): Pa
   pane.addBinding(params, "reliefStrength", { min: 0, max: 40, step: 0.5 });
   pane.addBinding(params, "strokeWidthScale", { min: 0.2, max: 3, step: 0.05 });
   pane.addBinding(params, "strokeLengthScale", { min: 0.2, max: 3, step: 0.05 });
+  pane.addBinding(params, "cameraDistance", { min: 15, max: 120, step: 1 });
+  pane.addBinding(params, "speckleAmount", { min: 0, max: 2, step: 0.05 });
 
   pane.on("change", () => saveParamsToHash(params));
 
