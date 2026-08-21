@@ -54,3 +54,22 @@ CMU's data is free for all uses. BVH conversions by Bruce Hahne (cgspeed), mirro
 Default trial: **60_01 / 61_01** (18.7s). Alternate: **60_12 / 61_12** (14.1s, calmer, shorter loop).
 It is salsa rather than slow dancing — no free slow-dance couple capture appears to exist — so a
 global `timeScale` slows it. This helps rather than hurts: slower bones fling shorter, fatter strokes.
+
+### Alternate sources considered (not adopted)
+
+Researched as a follow-up in case a genuinely slower/closer partner dance turns up in a directly
+usable format (BVH/FBX, no proprietary retarget step):
+
+- **[Motorica Dance Dataset](https://github.com/simonalexanderson/MotoricaDanceDataset)** — free
+  for personal/hobby use (commercial needs permission), BVH, includes paired-dancer jazz/Charleston
+  sessions. Best-fit format-wise; unconfirmed whether paired sessions share one coordinate space
+  the way CMU 60/61 do — would need the same verification pass before use.
+- **ExPI (Lindy Hop)** — genuine paired capture, but requires a data-use agreement and the style is
+  acrobatic/aerial, not slow.
+- **Duolando DD100** — includes actual Waltz/Foxtrot/Tango, closest style match, but gated behind
+  the SMPL-X license and needs retargeting out of SMPL-X, not a direct BVH pull.
+- **MDD / InterDance** — include Waltz, but not yet publicly released as downloadable data as of
+  this writing.
+
+None beat CMU 60/61 on the combination of license clarity, format, and verified shared-space
+pairing, so no swap is planned unless the Motorica pairing checks out.

@@ -2,7 +2,7 @@
 id: toy-shell
 parent: roadmap
 phase: P0
-state: planned
+state: in-progress
 ---
 
 # toy-shell — canvas, loop, params, scrub, export
@@ -44,3 +44,11 @@ Layer cadence is a parameter (layers/sec), independent of display refresh. See
 
 The scrub bar moves a placeholder scene through its frames, params round-trip through the
 URL hash, and the loop's layer count for a given wall-clock span is identical across runs.
+
+## Status
+
+`canvas.ts`, `clock.ts`, `params.ts`, `timeline.ts`, `capture.ts` are written under
+`src/shell/`, none importing from `src/paint/` or `src/pose/`. Scrub bar and params panel
+verified working in-browser against real pose data (see [pose-pipeline](pose-pipeline.md)
+status). `clock.ts`'s `LayerClock` is written but not yet wired into `main.ts` — that lands
+with [paint-accumulator](paint-accumulator.md), which is the first consumer of layer cadence.

@@ -2,7 +2,7 @@
 id: pose-pipeline
 parent: roadmap
 phase: P1
-state: planned
+state: in-progress
 ---
 
 # pose-pipeline — from BVH to flung strokes
@@ -64,3 +64,19 @@ Budget: 2 dancers × ~20 bones × 8 samples ≈ 320 strokes/frame; ~1200 frames 
 
 Both dancers' strokes for a single scrubbed frame render as flat colored marks in roughly
 human arrangement, moving coherently as the scrub bar moves.
+
+## Status
+
+Bake (`scripts/bake-pose.mjs` + `scripts/lib/bvh-parser.mjs`) is written and verified: the
+FK output's hip separation matches the raw-BVH numbers recorded in `docs/roadmap.md` exactly,
+at every sampled frame. `scripts/fetch-bvh.mjs` pulls the two trials into a gitignored cache
+rather than vendoring BVH text, per the "why bake" rationale above. Default bake
+(60_01/61_01 @ 30fps) produces 561 frames x 38 joints x 2 dancers, ~500 KB.
+
+Runtime `src/pose/pose-cache.ts`, `skeleton.ts`, `emitters.ts` are written — emitters sample
+points along each bone with position + per-frame velocity delta. **Not yet done: the "Strokes"
+section above** — emitters currently render directly as flat `THREE.Points` in `main.ts` as
+a P1 placeholder; converting them into actual stroke instances (length/angle/width/volume
+from velocity, baked into one interleaved buffer with per-frame offsets) is the remaining
+pose-pipeline work, and is what [impasto-shading](impasto-shading.md) and
+[paint-accumulator](paint-accumulator.md) will consume.
