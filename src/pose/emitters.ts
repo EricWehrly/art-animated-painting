@@ -72,3 +72,51 @@ export function generateEmitters(
 
   return emitters;
 }
+
+export interface BoneSample {
+  parentPosition: [number, number, number];
+  childPosition: [number, number, number];
+  /** Per-frame velocity delta (world units/frame) of the segment as a whole — the average of
+   * the parent and child joints' own central-difference velocities. Represents the "force"
+   * moving this limb; see pose/strokes.ts generateBoneStrokes for how it's used to bend paint
+   * direction and push stroke position, on top of the bone's own static orientation. */
+  velocity: [number, number, number];
+  thickness: number;
+  /** Stable per-bone identity (index into the `bones` array passed to generateBoneSamples),
+   * used downstream to seed deterministic per-stroke pressure so it doesn't flicker frame to
+   * frame — see docs/work/pose-pipeline.md. */
+  boneIndex: number;
+}
+
+/**
+ * One sample per bone segment (not per point along it — see generateBoneStrokes, which decides
+ * how many strokes a bone needs to cover its own length). Carries both endpoints' positions
+ * plus the segment's average velocity, so strokes.ts can align paint to the bone's own
+ * direction and use motion only to bend/push that, rather than motion being the sole
+ * determinant of stroke orientation.
+ */
+export function generateBoneSamples(
+  cache: PoseCache,
+  bones: BoneSegment[],
+  dancerIndex: number,
+  frame: number
+): BoneSample[] {
+  return bones.map((bone, boneIndex) => {
+    const parentPosition = jointWorldPosition(cache, dancerIndex, frame, bone.parentIndex);
+    const childPosition = jointWorldPosition(cache, dancerIndex, frame, bone.childIndex);
+
+    const parentPrev = jointWorldPosition(cache, dancerIndex, frame - 1, bone.parentIndex);
+    const childPrev = jointWorldPosition(cache, dancerIndex, frame - 1, bone.childIndex);
+    const parentNext = jointWorldPosition(cache, dancerIndex, frame + 1, bone.parentIndex);
+    const childNext = jointWorldPosition(cache, dancerIndex, frame + 1, bone.childIndex);
+
+    const velocity: [number, number, number] = [0, 0, 0];
+    for (let k = 0; k < 3; k++) {
+      const parentV = (parentNext[k] - parentPrev[k]) / 2;
+      const childV = (childNext[k] - childPrev[k]) / 2;
+      velocity[k] = (parentV + childV) / 2;
+    }
+
+    return { parentPosition, childPosition, velocity, thickness: bone.thickness, boneIndex };
+  });
+}

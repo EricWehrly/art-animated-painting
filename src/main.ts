@@ -6,8 +6,8 @@ import { createParamsPanel, loadParamsFromHash, saveParamsToHash, defaultParams,
 import { capturePNG } from "./shell/capture";
 import { loadPoseCache } from "./pose/pose-cache";
 import { boneSegments } from "./pose/skeleton";
-import { generateEmitters } from "./pose/emitters";
-import { generateStrokes, generateSpeckles, type Stroke, type StrokeStyle, type SpeckleStyle } from "./pose/strokes";
+import { generateEmitters, generateBoneSamples } from "./pose/emitters";
+import { generateBoneStrokes, generateSpeckles, type Stroke, type BoneStrokeStyle, type SpeckleStyle } from "./pose/strokes";
 import { createStrokeMesh } from "./paint/stroke-mesh";
 import { createHeightPass } from "./paint/height-pass";
 import { createShadingPass } from "./paint/shading-pass";
@@ -30,12 +30,18 @@ async function main() {
   const frameCount = cache.header.frameCount;
   timeline.setFrameCount(frameCount);
 
-  const samplesPerBone = 6;
+  // Main strokes are now one-per-bone (occasionally two, for the longest bones) rather than a
+  // fixed dense sampling — see generateBoneStrokes in pose/strokes.ts. Speckles still sample
+  // several points per bone since they want the velocity spread along a rotating limb, not
+  // just its endpoints.
+  const maxStrokesPerBone = 2;
+  const speckleSamplesPerBone = 3;
   const speckleMaxCount = 6;
-  const mainStrokesTotal = bones.length * samplesPerBone * cache.header.dancers.length;
+  const mainStrokesTotal = bones.length * maxStrokesPerBone * cache.header.dancers.length;
+  const speckleEmittersTotal = bones.length * speckleSamplesPerBone * cache.header.dancers.length;
   // Generous headroom for speckles on top of the main strokes — setStrokes() silently caps
   // at this budget, so this only needs to comfortably cover the worst case, not be exact.
-  const maxStrokes = mainStrokesTotal * (1 + speckleMaxCount * 2);
+  const maxStrokes = mainStrokesTotal + speckleEmittersTotal * speckleMaxCount * 2;
 
   const strokeMesh = createStrokeMesh(maxStrokes);
   const heightPass = createHeightPass(domElement.width, domElement.height);
@@ -75,16 +81,25 @@ async function main() {
     syncCameraParamsAndRerender();
   });
 
-  function strokeStyleFor(dancerIndex: number): StrokeStyle {
+  function strokeStyleFor(dancerIndex: number): BoneStrokeStyle {
     const hex = dancerIndex === 0 ? params.colorA : params.colorB;
     const c = new THREE.Color(hex);
     return {
       color: [c.r, c.g, c.b],
-      lengthScale: 0.9 * params.strokeLengthScale,
-      minLength: 1.0,
-      maxLength: 9,
-      widthScale: 0.8 * params.strokeWidthScale,
+      // Higher than the old per-emitter system's 0.8 — that relied on several overlapping
+      // samples along a bone to build up visual weight through overlap; one-stroke-per-bone
+      // needs each stroke to carry a limb's visual bulk on its own, or it reads as a thin
+      // connecting line rather than the arm/leg it's meant to represent.
+      widthScale: 1.5 * params.strokeWidthScale,
+      lengthScale: params.strokeLengthScale,
       volumeScale: 0.35,
+      pressureVariance: params.pressureVariance,
+      // Comfortably above the longest bone in the CMU rig (thighs/shins, ~7.3 units) so
+      // almost every bone gets exactly one stroke; maxStrokesPerBone is just a safety net for
+      // any unusually long bone.
+      targetStrokeLength: 10,
+      maxStrokesPerBone,
+      forceScale: 1.0,
     };
   }
 
@@ -103,9 +118,10 @@ async function main() {
   function renderFrame(frame: number) {
     const allStrokes: Stroke[] = [];
     for (let dancerIndex = 0; dancerIndex < cache.header.dancers.length; dancerIndex++) {
-      const emitters = generateEmitters(cache, bones, dancerIndex, frame, samplesPerBone);
-      allStrokes.push(...generateStrokes(emitters, strokeStyleFor(dancerIndex)));
+      const boneSamples = generateBoneSamples(cache, bones, dancerIndex, frame);
+      allStrokes.push(...generateBoneStrokes(boneSamples, strokeStyleFor(dancerIndex)));
       if (params.speckleAmount > 0) {
+        const emitters = generateEmitters(cache, bones, dancerIndex, frame, speckleSamplesPerBone);
         allStrokes.push(...generateSpeckles(emitters, frame, speckleStyleFor(dancerIndex)));
       }
     }

@@ -20,6 +20,9 @@ export interface ToyParams {
   targetZ: number;
   /** 0 disables the flung-droplet speckles entirely; scales speckle count. */
   speckleAmount: number;
+  /** 0 = every stroke on a bone uses identical width/volume; 1 = strokes range roughly
+   * 0.5x-1.5x pressure, so paint reads as unevenly applied. See pose/strokes.ts. */
+  pressureVariance: number;
 }
 
 export const defaultParams: ToyParams = {
@@ -35,6 +38,7 @@ export const defaultParams: ToyParams = {
   targetY: 15,
   targetZ: 0,
   speckleAmount: 0.6,
+  pressureVariance: 0.5,
 };
 
 /** Reads params from the URL hash (if present), falling back to defaults. */
@@ -67,6 +71,7 @@ export function createParamsPanel(container: HTMLElement, params: ToyParams): Pa
   pane.addBinding(params, "strokeLengthScale", { min: 0.2, max: 3, step: 0.05 });
   pane.addBinding(params, "cameraDistance", { min: 8, max: 150, step: 1, label: "zoom (distance)" });
   pane.addBinding(params, "speckleAmount", { min: 0, max: 2, step: 0.05 });
+  pane.addBinding(params, "pressureVariance", { min: 0, max: 1, step: 0.05 });
 
   pane.on("change", () => saveParamsToHash(params));
 

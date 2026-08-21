@@ -82,7 +82,18 @@ const strokeShapeGLSL = /* glsl */ `
   // resolve (screen-space derivative of the phase), instead of letting it alias into noise.
   float phaseDeriv = fwidth(wave1);
   float bristleAmp = clamp(1.0 - phaseDeriv / 3.14159, 0.0, 1.0);
-  float bristle = mix(1.0, rawBristle, 0.6 * bristleAmp);
+
+  // Chop the stroke into a few blocky facets along its length (2-3 cells, a hard per-cell
+  // step, not a smooth gradient) instead of letting the ridge pattern run continuously end to
+  // end — the ridge pattern alone still reads as combed hatching lines; this is what actually
+  // breaks a stroke into a few distinct overlapping daubs, each with its own coverage/pigment/
+  // height level, the way a loaded brush or knife deposits paint in separate touches rather
+  // than one continuous stripe.
+  float facetCell = floor(along * 2.6 + vSeed * 8.0);
+  float facetHash = fract(sin(facetCell * 12.9898 + vSeed * 78.233) * 43758.5453);
+  float facetShade = 0.6 + 0.4 * facetHash;
+
+  float bristle = mix(1.0, rawBristle, 0.6 * bristleAmp) * mix(1.0, facetShade, 0.55);
 
   float alpha = clamp(widthMask * endCap * bristle, 0.0, 1.0);
   if (alpha < 0.02) discard;
@@ -115,7 +126,10 @@ const strokeShapeGLSL = /* glsl */ `
   float lumpPhase = along * 5.0 + vSeed * 17.0;
   float lump = 0.78 + 0.22 * sin(lumpPhase) * sin(lumpPhase * 0.63 + vSeed * 4.0);
 
-  float heightProfile = endCap * crown * (lump + ridgeHeight * 0.7);
+  // Same facet chunking as alpha/color, folded into height too — a lightly-loaded facet
+  // should sit measurably lower than a heavily-loaded one, not just look thinner in color
+  // while remaining exactly as tall.
+  float heightProfile = endCap * crown * (lump * mix(1.0, facetShade, 0.5) + ridgeHeight * 0.7);
 `;
 
 const colorFragmentShader = /* glsl */ `

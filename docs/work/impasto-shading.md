@@ -248,3 +248,22 @@ centerline is gone, replaced by scattered highlight breakup along wider, chunkie
 with visibly torn stroke edges. Not yet a full match to the reference photos' broad flat
 knife-daub facets — still reads more like directional hatching than distinct overlapping
 daubs — flagged as the next tuning target, not treated as done.
+
+### Round 6: chop ridges into a few distinct facets, not one continuous stripe
+
+The Round 5 ridge pattern (`wave1`/`wave2`) is fundamentally 1D across a stroke's width —
+however wide the ridges get, they still run continuously the full length of the stroke,
+which is what kept reading as combed hatching rather than separate daub touches. Added a
+low-frequency (2-3 cells) chunk along the stroke's *length* in `stroke-mesh.ts`: `floor(along
+* 2.6 + seed)` gives each cell a hard-stepped (not blended) hash-driven shade, applied to
+`bristle` (so it affects alpha/coverage and — via the shared pigment-load calc in
+`colorFragmentShader` — color together) and folded into `heightProfile`'s `lump` term too,
+so a lighter-loaded facet is also measurably lower, not just a different color at the same
+height. Coverage, pigment, and relief all agreeing about where one "touch" of paint ends and
+the next begins is what should read as separate daubs instead of one shaded stripe.
+
+Verified on the swatch canvas: close-up crops show a visible seam partway along a stroke
+where brightness/coverage steps rather than gradually fades — a real break in the pattern,
+not just noise. Still fairly subtle at a distance; if it needs to read more strongly this is
+the parameter to push first (`0.55` blend strength, `2.6` cell frequency), rather than adding
+another new mechanism.

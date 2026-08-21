@@ -84,3 +84,49 @@ frames. At ~300 strokes/frame this recompute is trivial CPU work; the "bake ever
 strokes into one instanced buffer" idea remains the right move once
 [paint-accumulator](paint-accumulator.md) needs to replay a K-layer history window fast for
 scrubbing — revisit then rather than building it speculatively now.
+
+### Round 2: retargeted from velocity-driven speckling to bone-aligned coverage
+
+The original "Strokes" design above (angle = velocity direction, length ∝ speed) meant a
+still or slow-moving bone produced a tiny near-dot stroke and a fast one produced a streak
+pointed wherever it happened to be moving — orientation had no relationship to the limb's own
+shape at all. On a scrubbed frame this read as scattered speckling with no clear body, not
+brushstrokes representing a dancer. User brief: paint should "connect the dots" — cover each
+bone with as few strokes as possible, oriented as if the brush is being dragged along that
+limb, with the limb's own motion only *pushing* that direction and position (force), not
+replacing it. Also asked for uneven pressure — "different amounts of paint" stroke to stroke.
+
+Retargeted in `emitters.ts` and `strokes.ts`:
+
+- **`generateBoneSamples`** (emitters.ts) replaces per-bone dense sampling for the main
+  strokes: one sample per bone, carrying both endpoints' positions and the segment's average
+  velocity (parent + child central-difference velocity, averaged) rather than many
+  independent point samples. `generateEmitters` (the old dense per-point sampler) is kept
+  as-is, now used only to feed `generateSpeckles` — the fling/spatter effect still wants
+  several velocity samples along a rotating limb, main coverage doesn't.
+- **`generateBoneStrokes`** (strokes.ts) replaces `generateStrokes`: orientation is
+  `mix(boneDirection, velocityDirection, forceBlend)` where `forceBlend` grows with speed but
+  caps at 0.6, so a bone always stays recognizably aligned with the limb it represents even
+  during a fast swing — motion bends the stroke, it doesn't take over. Position gets a small
+  push along the velocity direction too, proportional to the same force term (paint landing
+  slightly ahead of where the limb currently is, like real pressure smearing it forward).
+  Stroke count per bone is `round(boneLength / targetStrokeLength)`, clamped to
+  `maxStrokesPerBone` (2) — `targetStrokeLength` (10 world units) is set comfortably above the
+  longest bone in the CMU rig (thighs/shins, ~7.3 units, measured directly from the baked
+  cache), so almost every bone gets exactly **one** stroke. Zero-length rig stub joints (BVH's
+  pure-rotation pivots, e.g. "Neck", "LHipJoint") are skipped rather than emitting a
+  degenerate dot.
+- **Pressure unevenness**: each stroke gets a `pressure` multiplier (`1 ± pressureVariance`,
+  new `ToyParams.pressureVariance`, default 0.5) applied to both width and volume, seeded
+  deterministically from `(boneIndex, strokeSlotIndex)` — not frame or time, so a bone's
+  pressure is a fixed identity that doesn't flicker as the pose animates, but does vary
+  stroke to stroke and bone to bone.
+- `main.ts`'s per-bone base `widthScale` was raised 0.8 → 1.5: the old system built up visual
+  limb thickness through several overlapping samples per bone; one stroke per bone has to
+  carry that bulk alone or it reads as a thin connecting line rather than an arm/leg.
+
+Verified visually (swatch canvas unaffected — it builds strokes directly, not through this
+path — and the real dance scene, both at a static frame and mid-motion via scrub): the pose
+now reads immediately as a stick-figure-like arrangement of directed limb strokes rather than
+speckled dots, with visible pressure variation stroke to stroke and visible direction bias on
+fast-moving limbs (mid-swing frames show strokes clearly skewed off their resting bone angle).
