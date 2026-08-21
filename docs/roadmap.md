@@ -46,13 +46,18 @@ Traversal:
   whether pan/zoom should stay live once accumulation is running, at P3 time.
 - **Decay is keyed to layer cadence, not render fps.** See [paint-accumulator](work/paint-accumulator.md).
 
-## Under consideration, not started
+## Built: brush swatch canvas
 
-- **A stroke/brush swatch mode** — a stripped-down canvas showing just strokes and their
-  variants (bristle texture, speckles, sizing) in isolation from the dancers, for faster
-  visual iteration on the paint itself. Raised while tuning stroke appearance against
-  reference photos; not yet built — the dancer-driven canvas has been enough to iterate on
-  so far, but may be worth it if that stops being true.
+`swatch.html` / `src/swatch.ts` — a stripped-down canvas showing six large, isolated
+strokes (varied angle/width/length/color, two with attached speckle clusters), no dancers,
+no pose data, no scrubbing. Reuses the shell (camera controls, params panel) and the full
+paint pipeline (stroke-mesh, height-pass, shading-pass) unmodified. Built once iterating
+against the full dance scene stopped being fast enough to judge paint-quality changes —
+turned out to be essential: it's what made the `[impasto-shading]` height-field bug (see
+below) actually diagnosable, since a handful of big strokes filling the frame is far easier
+to reason about than a couple hundred small ones on two moving figures.
+
+Linked from `index.html` ("brush swatches →") and vice versa ("← painting").
 
 ## Source data
 

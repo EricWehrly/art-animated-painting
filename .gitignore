@@ -3,3 +3,6 @@ dist/
 .DS_Store
 *.local
 scripts/.cache/
+swatch-shot.png
+upload-server.log
+upload-server-err.log

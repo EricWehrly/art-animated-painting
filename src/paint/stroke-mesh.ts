@@ -42,7 +42,50 @@ const strokeVertexShader = /* glsl */ `
   }
 `;
 
-const strokeFragmentShader = /* glsl */ `
+// Shared by both fragment shaders below — computes alpha (coverage) and heightProfile
+// (the paint's cross-section shape) identically either way, so the color pass and the
+// height pass always agree on where a stroke actually is.
+const strokeShapeGLSL = /* glsl */ `
+  float across = abs(vUv.y - 0.5) * 2.0; // 0 at center, 1 at edge
+  float widthMask = 1.0 - smoothstep(0.55, 1.0, across);
+
+  float along = vUv.x; // 0..1 along stroke length
+  float endCap = smoothstep(0.0, 0.12, along) * (1.0 - smoothstep(0.88, 1.0, along));
+
+  // Bristle ridges at a fixed WORLD-space spacing (not a fixed count across the UV range) —
+  // a fixed cycle count aliased badly on narrow strokes, which is what read as "pixelly":
+  // dozens of ridge cycles were being crammed into a couple of screen pixels. Two
+  // frequencies beating against each other (not one clean sine) break the perfectly regular
+  // "barcode" look a single frequency gives — real bristle spacing isn't uniform.
+  float ridgeSpacing = 0.18;
+  float cycles = min(vWidth / ridgeSpacing, 40.0);
+  float wave1 = vUv.y * cycles * 6.28318 + sin(vUv.x * 6.28318 + vSeed * 3.0) * 0.6 + vSeed * 11.0;
+  float wave2 = vUv.y * cycles * 1.7 * 6.28318 + vSeed * 7.0;
+  float rawBristle = 0.5 + 0.35 * sin(wave1) + 0.15 * sin(wave2);
+
+  // Fade the ridge pattern out once its on-screen frequency exceeds what this pixel can
+  // resolve (screen-space derivative of the phase), instead of letting it alias into noise.
+  float phaseDeriv = fwidth(wave1);
+  float bristleAmp = clamp(1.0 - phaseDeriv / 3.14159, 0.0, 1.0);
+  float bristle = mix(1.0, rawBristle, 0.6 * bristleAmp);
+
+  float alpha = clamp(widthMask * endCap * bristle, 0.0, 1.0);
+  if (alpha < 0.02) discard;
+
+  // Height gets its OWN cross-section shape, separate from alpha's coverage mask. alpha's
+  // widthMask is a near-flat plateau (opaque paint covers most of a stroke's width
+  // uniformly) — using that for height too was the main reason strokes rendered as flat
+  // colored ribbons with no visible 3D curvature: there was no broad surface for a normal to
+  // curve across, only the fine bristle ripples, which read as thin mechanical stripes with
+  // nothing underneath them. A cosine dome gives every stroke a real rounded ridge — the
+  // single highest-impact change for making this look like a bead of paint, not a flat
+  // decal — plus a slow along-length undulation so the ridge crest isn't perfectly straight.
+  float crown = cos(clamp(across, 0.0, 1.0) * 1.5707963);
+  float crownWaver = 0.85 + 0.15 * sin(along * 8.0 + vSeed * 5.0);
+  float heightProfile = endCap * crown * crownWaver;
+`;
+
+const colorFragmentShader = /* glsl */ `
   precision highp float;
 
   in vec2 vUv;
@@ -51,33 +94,10 @@ const strokeFragmentShader = /* glsl */ `
   in float vSeed;
   in float vWidth;
 
-  layout(location = 0) out vec4 gColorSum;
-  layout(location = 1) out vec4 gHeightSum;
+  out vec4 outColor;
 
   void main() {
-    float across = abs(vUv.y - 0.5) * 2.0; // 0 at center, 1 at edge
-    float widthMask = 1.0 - smoothstep(0.55, 1.0, across);
-
-    float along = vUv.x; // 0..1 along stroke length
-    float endCap = smoothstep(0.0, 0.12, along) * (1.0 - smoothstep(0.88, 1.0, along));
-
-    // Bristle ridges at a fixed WORLD-space spacing (not a fixed count across the UV
-    // range) — a fixed cycle count aliased badly on narrow strokes, which is what read as
-    // "pixelly": dozens of ridge cycles were being crammed into a couple of screen pixels.
-    // A little along-length wave breaks the ridges from perfectly straight into the slightly
-    // wavering streaks real bristles leave.
-    float ridgeSpacing = 0.18;
-    float cycles = min(vWidth / ridgeSpacing, 40.0);
-    float phase = vUv.y * cycles * 6.28318 + sin(vUv.x * 6.28318 + vSeed * 3.0) * 0.6 + vSeed * 11.0;
-
-    // Fade the ridge pattern out once its on-screen frequency exceeds what this pixel can
-    // resolve (screen-space derivative of the phase), instead of letting it alias into noise.
-    float phaseDeriv = fwidth(phase);
-    float bristleAmp = clamp(1.0 - phaseDeriv / 3.14159, 0.0, 1.0);
-    float bristle = mix(1.0, 0.5 + 0.5 * sin(phase), 0.6 * bristleAmp);
-
-    float alpha = clamp(widthMask * endCap * bristle, 0.0, 1.0);
-    if (alpha < 0.02) discard;
+    ${strokeShapeGLSL}
 
     // A single flat color per stroke, varying only in coverage, is what read as "screen
     // color" instead of paint — real pigment varies hair to hair. Reuse the bristle ridge
@@ -89,35 +109,65 @@ const strokeFragmentShader = /* glsl */ `
     float pigmentLoad = mix(0.8, 1.2, bristle) + grain;
     vec3 tintedColor = clamp(vColor * pigmentLoad, 0.0, 1.5);
 
-    // Coverage-weighted additive accumulation: color and height both accumulate under a
-    // single ADDITIVE blend state (see docs/work/impasto-shading.md status notes) — the
-    // composite pass divides color-sum by coverage-sum to recover an averaged color. This
-    // is the same pattern paint-accumulator will reuse for decay + splat.
-    gColorSum = vec4(tintedColor * alpha, alpha);
-    gHeightSum = vec4(alpha * vVolume, 0.0, 0.0, 0.0);
+    // Coverage-weighted additive accumulation: color accumulates under ADDITIVE blending
+    // (see docs/work/impasto-shading.md status notes) — the composite pass divides
+    // color-sum by coverage-sum to recover an averaged color. Same pattern
+    // paint-accumulator will reuse for decay + splat.
+    outColor = vec4(tintedColor * alpha, alpha);
+  }
+`;
+
+const heightFragmentShader = /* glsl */ `
+  precision highp float;
+
+  in vec2 vUv;
+  in vec3 vColor;
+  in float vVolume;
+  in float vSeed;
+  in float vWidth;
+
+  out vec4 outColor;
+
+  void main() {
+    ${strokeShapeGLSL}
+
+    // Alpha MUST be nonzero, even though nothing ever reads it back (the shading pass only
+    // samples .r of this target). Writing alpha=0 here — into an additively-blended
+    // half-float render target — silently zeroed the RGB channels too on this environment's
+    // WebGL2/ANGLE build. Confirmed by isolating every other variable (one MRT target vs.
+    // two separate targets, geometry shared vs. independent between the color/height
+    // meshes, vertex shader source shared vs. textually distinct, varyings as separate
+    // floats vs. packed into one vector) and finding none of them mattered except this one
+    // line. If you're tempted to "clean up" this alpha value, don't.
+    outColor = vec4(heightProfile * vVolume, 0.0, 0.0, 1.0);
   }
 `;
 
 export interface StrokeMeshHandle {
-  mesh: THREE.Mesh;
+  colorMesh: THREE.Mesh;
+  heightMesh: THREE.Mesh;
   setStrokes(strokes: Stroke[]): void;
 }
 
-/**
- * Instanced billboard quads, one per stroke, oriented along each stroke's velocity in view
- * space and textured with a procedural bristle-streak alpha. Renders into the MRT height
- * pass (see height-pass.ts) — never directly to screen.
- */
-export function createStrokeMesh(maxInstances: number): StrokeMeshHandle {
-  const quad = new THREE.InstancedBufferGeometry();
-  quad.setAttribute(
-    "position",
-    new THREE.BufferAttribute(
-      new Float32Array([-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0]),
-      3
-    )
-  );
-  quad.instanceCount = 0;
+const QUAD_POSITIONS = new Float32Array([
+  -0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0,
+]);
+
+interface InstancedAttrs {
+  geometry: THREE.InstancedBufferGeometry;
+  iCenter: THREE.InstancedBufferAttribute;
+  iVelocity: THREE.InstancedBufferAttribute;
+  iWidth: THREE.InstancedBufferAttribute;
+  iLength: THREE.InstancedBufferAttribute;
+  iVolume: THREE.InstancedBufferAttribute;
+  iColor: THREE.InstancedBufferAttribute;
+  iSeed: THREE.InstancedBufferAttribute;
+}
+
+function createInstancedGeometry(maxInstances: number): InstancedAttrs {
+  const geometry = new THREE.InstancedBufferGeometry();
+  geometry.setAttribute("position", new THREE.BufferAttribute(QUAD_POSITIONS, 3));
+  geometry.instanceCount = 0;
 
   const iCenter = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances * 3), 3);
   const iVelocity = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances * 3), 3);
@@ -128,43 +178,67 @@ export function createStrokeMesh(maxInstances: number): StrokeMeshHandle {
   const iSeed = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances), 1);
   for (const [name, attr] of Object.entries({ iCenter, iVelocity, iWidth, iLength, iVolume, iColor, iSeed })) {
     attr.setUsage(THREE.DynamicDrawUsage);
-    quad.setAttribute(name, attr);
+    geometry.setAttribute(name, attr);
   }
 
-  const material = new THREE.ShaderMaterial({
+  return { geometry, iCenter, iVelocity, iWidth, iLength, iVolume, iColor, iSeed };
+}
+
+function writeStrokes(attrs: InstancedAttrs, strokes: Stroke[], maxInstances: number) {
+  const n = Math.min(strokes.length, maxInstances);
+  for (let i = 0; i < n; i++) {
+    const s = strokes[i];
+    attrs.iCenter.setXYZ(i, s.position[0], s.position[1], s.position[2]);
+    attrs.iVelocity.setXYZ(i, s.velocity[0], s.velocity[1], s.velocity[2]);
+    attrs.iWidth.setX(i, s.width);
+    attrs.iLength.setX(i, s.length);
+    attrs.iVolume.setX(i, s.volume);
+    attrs.iColor.setXYZ(i, s.color[0], s.color[1], s.color[2]);
+    attrs.iSeed.setX(i, s.seed);
+  }
+  attrs.geometry.instanceCount = n;
+  attrs.iCenter.needsUpdate = true;
+  attrs.iVelocity.needsUpdate = true;
+  attrs.iWidth.needsUpdate = true;
+  attrs.iLength.needsUpdate = true;
+  attrs.iVolume.needsUpdate = true;
+  attrs.iColor.needsUpdate = true;
+  attrs.iSeed.needsUpdate = true;
+}
+
+function makeStrokeMaterial(fragmentShader: string): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
     glslVersion: THREE.GLSL3,
     vertexShader: strokeVertexShader,
-    fragmentShader: strokeFragmentShader,
+    fragmentShader,
     blending: THREE.AdditiveBlending,
     depthTest: false,
     depthWrite: false,
     transparent: false,
   });
+}
 
-  const mesh = new THREE.Mesh(quad, material);
-  mesh.frustumCulled = false;
+/**
+ * Instanced billboard quads, one per stroke, oriented along each stroke's velocity in view
+ * space and textured with a procedural bristle-streak alpha. The color mesh and height mesh
+ * each own an independent InstancedBufferGeometry, fed identical per-instance data from a
+ * single `setStrokes` call — cheap at this instance count, and it means changing one
+ * material's shader can never accidentally affect the other's compiled attribute layout.
+ * Neither mesh renders directly to screen; both are inputs to height-pass.ts.
+ */
+export function createStrokeMesh(maxInstances: number): StrokeMeshHandle {
+  const colorAttrs = createInstancedGeometry(maxInstances);
+  const heightAttrs = createInstancedGeometry(maxInstances);
+
+  const colorMesh = new THREE.Mesh(colorAttrs.geometry, makeStrokeMaterial(colorFragmentShader));
+  colorMesh.frustumCulled = false;
+  const heightMesh = new THREE.Mesh(heightAttrs.geometry, makeStrokeMaterial(heightFragmentShader));
+  heightMesh.frustumCulled = false;
 
   function setStrokes(strokes: Stroke[]) {
-    const n = Math.min(strokes.length, maxInstances);
-    for (let i = 0; i < n; i++) {
-      const s = strokes[i];
-      iCenter.setXYZ(i, s.position[0], s.position[1], s.position[2]);
-      iVelocity.setXYZ(i, s.velocity[0], s.velocity[1], s.velocity[2]);
-      iWidth.setX(i, s.width);
-      iLength.setX(i, s.length);
-      iVolume.setX(i, s.volume);
-      iColor.setXYZ(i, s.color[0], s.color[1], s.color[2]);
-      iSeed.setX(i, s.seed);
-    }
-    quad.instanceCount = n;
-    iCenter.needsUpdate = true;
-    iVelocity.needsUpdate = true;
-    iWidth.needsUpdate = true;
-    iLength.needsUpdate = true;
-    iVolume.needsUpdate = true;
-    iColor.needsUpdate = true;
-    iSeed.needsUpdate = true;
+    writeStrokes(colorAttrs, strokes, maxInstances);
+    writeStrokes(heightAttrs, strokes, maxInstances);
   }
 
-  return { mesh, setStrokes };
+  return { colorMesh, heightMesh, setStrokes };
 }

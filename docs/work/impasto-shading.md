@@ -155,3 +155,50 @@ far from ground color, so no coverage-edge contamination), per-channel min/max r
 R 172–191, G 78–85, B 67–74 — real intra-stroke variation where the old code was
 mathematically guaranteed exactly uniform. Ground patches likewise show non-zero per-pixel
 variance where they were previously a single exact RGB value.
+
+### Round 4: still no visible 3D curvature — a real height-field bug, not a tuning problem
+
+Round 3's numeric checks all passed (real color variance, correct ground texture) but the
+user, looking at the actual render, said it "looks the same" — flat, glowing, no visible
+paint relief. That gap between "the math checks out" and "the human looking at it disagrees"
+is the reason [swatch.html](../roadmap.md) got built: a handful of large strokes filling
+the frame, and a local-HTTP-server trick to actually get a screenshot out of the browser
+sandbox (`scripts/dev-upload-server.mjs` — the page POSTs `canvas.toBlob()` to a tiny Node
+server, which writes it to disk; there is still no working screenshot tool in this
+environment). First real look at the render confirmed the complaint immediately: hard
+barcode-regular stripes, zero visible curvature, pure-black ground despite the "textured
+ground" fix.
+
+Two real, distinct bugs, found by actually looking rather than trusting pixel statistics:
+
+1. **The alpha-coverage mask (`widthMask`) was reused for height**, and it's a near-flat
+   plateau across most of a stroke's width — so there was no broad surface for a lighting
+   normal to curve across, only fine bristle ripples with nothing underneath them. Fixed by
+   giving height its own cosine-dome cross-section (`crown` in `strokeShapeGLSL`),
+   independent of alpha's coverage shape.
+2. **The height field itself was reading back as exactly zero**, discovered only after
+   extensive isolation (documented in code comments, not repeated here) — trying single vs.
+   two-attachment render targets, shared vs. independent geometry between the color/height
+   meshes, shared vs. textually-distinct vertex shader source, and separate vs.
+   vector-packed varyings, none of which mattered. The actual cause: `heightFragmentShader`
+   wrote `alpha = 0.0` in its unused 4th output channel (nothing ever reads it — the
+   composite pass only samples `.r`), and writing zero alpha into an additively-blended
+   half-float render target silently zeroed the RGB channels too, on this environment's
+   WebGL2/ANGLE build. Setting that channel to `1.0` — a value that is never read — fixed
+   it completely. `stroke-mesh.ts` carries a deliberately blunt comment on that line so it
+   doesn't get "cleaned up" by someone who doesn't know why it's there.
+
+The color/height split ended up as two independent `InstancedBufferGeometry`s (in
+`stroke-mesh.ts`) and two single-attachment render targets (in `height-pass.ts`, replacing
+the original MRT target) — not because either was the actual fix, but because they were
+already in place from the isolation process and are harmless (the extra draw call is
+negligible at this instance count), so they were kept rather than reverted back to MRT and
+re-tested again.
+
+Verified visually this time, not just numerically: the swatch canvas now shows real domed
+strokes with a highlight running down the center of each and darker shading toward the
+edges — a rounded bead of paint, not a flat colored bar. Still not fully matching the
+reference photos' matte, textured impasto (currently reads a bit glowy/specular-dominated,
+and the bristle texture is now subtle compared to the dome), which is the next thing to
+tune, but the structural bug — no height signal reaching the shading pass at all — is
+resolved.

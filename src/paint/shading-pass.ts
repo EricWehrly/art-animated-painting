@@ -91,11 +91,14 @@ const quadFragmentShader = /* glsl */ `
 
     // Cheap procedural canvas weave (screen-space, so it reads as fabric texture at any
     // zoom rather than a flat fill) — this is what mostly targets "still reads as screen
-    // color": bare ground was a single uniform RGB value before this.
+    // color": bare ground was a single near-black uniform RGB value before this, and even
+    // after adding a weave term the contrast was far too subtle against that dark a base to
+    // actually be visible (near-black * ±10% is a couple of RGB units, invisible). Needs a
+    // lighter/warmer base tone (set at the call site) and real contrast, not a token gesture.
     vec2 px = gl_FragCoord.xy;
-    float weave = 0.5 + 0.5 * sin(px.x * 0.85) * sin(px.y * 0.85);
+    float weave = 0.5 + 0.5 * sin(px.x * 0.9) * sin(px.y * 0.9);
     float grain = hash21(floor(px * 0.5)) * 0.5 + 0.5;
-    vec3 ground = uGroundColor * mix(0.9, 1.08, weave) * mix(0.94, 1.04, grain);
+    vec3 ground = uGroundColor * mix(0.72, 1.28, weave) * mix(0.85, 1.15, grain);
 
     outColor = vec4(linearToSRGB(mix(ground, lit, coverage)), 1.0);
   }
@@ -122,9 +125,12 @@ export function createShadingPass(): ShadingPassHandle {
       uColorSum: { value: null },
       uHeightSum: { value: null },
       uTexelSize: { value: new THREE.Vector2(1 / 1024, 1 / 1024) },
-      uReliefStrength: { value: 14 },
+      uReliefStrength: { value: 22 },
       uAOStrength: { value: 1.6 },
-      uGroundColor: { value: new THREE.Color(0x16130f) },
+      // A warm, lighter linen tone — the previous near-black ground made any weave/grain
+      // contrast numerically invisible (a few RGB units at most). This is still a stand-in
+      // for real watercolor paper (P5), just one the weave texture can actually read against.
+      uGroundColor: { value: new THREE.Color(0x4a4032) },
     },
   });
 

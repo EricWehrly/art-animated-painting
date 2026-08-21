@@ -111,7 +111,7 @@ async function main() {
     }
     strokeMesh.setStrokes(allStrokes);
 
-    heightPass.render(renderer, strokeMesh.mesh, camera);
+    heightPass.render(renderer, strokeMesh.colorMesh, strokeMesh.heightMesh, camera);
     shadingPass.setReliefStrength(params.reliefStrength);
     shadingPass.render(renderer, heightPass.colorSumTexture, heightPass.heightSumTexture);
   }
