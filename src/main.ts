@@ -84,7 +84,11 @@ async function main() {
   });
 
   function strokeStyleFor(dancerIndex: number): BoneStrokeStyle {
-    const hex = dancerIndex === 0 ? params.colorA : params.colorB;
+    // Calm mode ("duress" off): a single shared color for both dancers, and every
+    // motion-driven effect zeroed — pure bone-aligned "connect the dots" coverage, for
+    // calibrating the base figure (recognizable torso/head/arms/legs) independent of how
+    // motion later bends it. See docs/work/pose-pipeline.md Round 5.
+    const hex = params.duress ? (dancerIndex === 0 ? params.colorA : params.colorB) : params.colorA;
     const c = new THREE.Color(hex);
     return {
       color: [c.r, c.g, c.b],
@@ -98,12 +102,12 @@ async function main() {
       // (hands, feet, fingers) still get just one.
       maxStrokeLength: 3.2,
       minStrokeLength: 1.0,
-      forceScale: 3.0,
+      forceScale: params.duress ? 3.0 : 0,
       // Calibrated so a "fast" limb (across-bone speed ~0.45, roughly the speckle-fling
       // threshold's neighborhood) sits near the maxWaverBlend cap rather than far under it.
-      waverScale: 1.2,
-      maxWaverBlend: 0.55,
-      smearScale: 1.5,
+      waverScale: params.duress ? 1.2 : 0,
+      maxWaverBlend: params.duress ? 0.55 : 0,
+      smearScale: params.duress ? 1.5 : 0,
     };
   }
 
@@ -123,7 +127,9 @@ async function main() {
     const allStrokes: Stroke[] = [];
     for (let dancerIndex = 0; dancerIndex < cache.header.dancers.length; dancerIndex++) {
       allStrokes.push(...generateBoneStrokes(cache, bones, dancerIndex, frame, strokeStyleFor(dancerIndex)));
-      if (params.speckleAmount > 0) {
+      // Speckles are a fling/spatter effect from motion — meaningless (and distracting from
+      // the base figure) in calm calibration mode.
+      if (params.duress && params.speckleAmount > 0) {
         const emitters = generateEmitters(cache, bones, dancerIndex, frame, speckleSamplesPerBone);
         allStrokes.push(...generateSpeckles(emitters, frame, speckleStyleFor(dancerIndex)));
       }

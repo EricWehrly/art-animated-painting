@@ -220,3 +220,41 @@ perpendicular ladder (Round 3's bug).
 Verified visually: a still leg (frame 0) now renders as clean diagonal strokes running along
 its own length, no ladder rungs. A leg mid-step (scrubbed to a fast frame) shows a gentle
 wavering S-curve along its length instead of either a straight line or crosswise dashes.
+
+### Round 5: calm-mode calibration — separating the base figure from the motion effect
+
+User reframed the goal in different terms, worth recording verbatim-in-spirit since it's the
+clearest statement of intent so far: the bones are "imaginary lines" — keys for motion, not
+what's being painted. What's being painted is the biped, and the brush wants to "connect the
+dots" and draw a recognizable stick figure; motion only *compels* the brush *within the
+confines of* that base intent, it doesn't replace it. Practical ask: calibrate the base
+figure — one relaxed, unhurried stick figure per dancer, single color, recognizable
+torso/head/arms/legs, hands not required — *before* judging how well motion bends it, since
+right now the two effects (bone coverage geometry vs. motion-driven waver) are only ever seen
+tangled together.
+
+Two changes:
+
+- **`ToyParams.duress`** (boolean, default `true`, new checkbox in the params panel): when
+  `false`, `strokeStyleFor` zeroes `forceScale`/`waverScale`/`maxWaverBlend`/`smearScale` (see
+  Round 4) and both dancers share one color (`colorA`); `renderFrame` skips speckle
+  generation entirely (speckles are a motion-fling effect, meaningless at rest). This is pure
+  bone-aligned "connect the dots" coverage with nothing else layered on — the calibration
+  target.
+- **Finger/thumb bones dropped** (`skeleton.ts`): `boneSegments` now skips any bone whose
+  child joint name matches thumb/index/middle/ring/pinky/fingerbase. The toy paints a
+  recognizable biped, not individual digits, and per-finger segments were pure clutter at
+  this scale — direct application of "there doesn't need to be hands, if we can, it's an
+  improvement." The actual hand/wrist bone (ForeArm → Hand) is unaffected.
+
+Also found a good calibration frame: a script summing per-joint speed across both dancers
+found frame 25 dramatically calmer (energy ≈8) than the clip's median (≈102) or frame 0
+(≈417, likely a bake-boundary discontinuity, not a real pose) — used as the "preparing to
+dance" reference frame throughout verification.
+
+Verified visually at frame 25 with `duress` off: both dancers render as clean, immediately
+recognizable single-color stick figures — head, torso (a stacked column of short spine
+segments, reads fine), bent arms, legs in a natural weight-shifted stance — with no
+speckle noise and no finger clutter. This is the calibration baseline Round 4's motion
+effects (waver/push/smear) get judged against; toggling `duress` back on with the same
+scrub position is now the direct A/B for "how much did motion just add."
