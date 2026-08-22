@@ -350,3 +350,30 @@ dabs and compounding the runaway.
 Verified visually at frame 180 (the same frame that showed both the disjointed strokes and,
 after the first fix attempt, the runaway arcs): the figure is compact and bounded again, with
 visible per-limb waver/bend under motion and no runaway excursions.
+
+### Round 8: joint-shaped bulges — width stepping at bone boundaries, dabs too big
+
+User's next screenshot (calm frame, a single leg) named a more specific version of the "too
+skeletal" complaint: visible bulges at each joint, like a beaded/knuckled chain rather than
+one smoothly tapering limb. Traced to two contributing causes in `generateChainStrokes`,
+both about the CURRENT bone's data being used as a hard constant within its own segment:
+
+- **Width stepped at every bone boundary.** `thickness` was `chain.thickness[segIndex]` — a
+  flat constant for an entire bone, jumping to a different constant the instant the walk
+  crossed into the next bone. A real limb narrows continuously along its length; it doesn't
+  step in diameter exactly at a knee or elbow. Fixed by computing thickness at each JOINT
+  instead (`jointThickness`: the two endpoint joints just take their one adjacent bone's
+  value, interior joints blend the two bones meeting there) and interpolating between the
+  current segment's two joint values using the same `t` (fraction along the segment) already
+  computed for velocity sampling — a smooth taper along the whole chain, no steps.
+- **Dabs were long and wide enough that each one read as its own distinct segment** rather
+  than blending into a continuous mass with its neighbors. `maxStrokeLength` 3.2 → 1.8,
+  `minStrokeLength` 1.0 → 0.6 (main.ts) — shorter dabs mean more of them overlap-build any
+  given stretch of limb, which is what makes many small brushmarks read as one continuous
+  form instead of a chain of visibly distinct capsules. `maxDabsPerChainBudget` (buffer
+  sizing) raised 30 → 40 to match `MAX_DABS_PER_CHAIN_SAFETY` exactly, since a long chain at
+  the new smaller `minStrokeLength` needs more dabs to cover (~32 worst case, up from ~20).
+
+Verified visually at frame 25 (calm, matching the user's screenshot) and frame 180 (duress
+on, mid-motion, no console errors, no regression to the Round 7 runaway/disjointed bugs): a
+leg now reads as one continuously tapering form, no visible bulge at the knee or ankle.

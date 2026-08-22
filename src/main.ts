@@ -36,11 +36,11 @@ async function main() {
   timeline.setFrameCount(frameCount);
 
   // A long chain (leg: hip to toe, ~19 world units) at minimum paint load could in principle
-  // need ~20 dabs at the style values below; this is generous headroom above that, not a hard
-  // limit the walk itself respects (that's MAX_DABS_PER_CHAIN_SAFETY inside
-  // generateChainStrokes). Speckles still sample several fixed points per bone since they
-  // want the velocity spread along a rotating limb, not coverage.
-  const maxDabsPerChainBudget = 30;
+  // need ~32 dabs at the style values below; this matches generateChainStrokes's own
+  // MAX_DABS_PER_CHAIN_SAFETY hard cap, so the buffer is always big enough regardless of how
+  // the style values get tuned. Speckles still sample several fixed points per bone since
+  // they want the velocity spread along a rotating limb, not coverage.
+  const maxDabsPerChainBudget = 40;
   const speckleSamplesPerBone = 3;
   const speckleMaxCount = 6;
   const mainStrokesTotal = chains.length * maxDabsPerChainBudget * cache.header.dancers.length;
@@ -100,12 +100,12 @@ async function main() {
       lengthScale: params.strokeLengthScale,
       volumeScale: 0.35,
       pressureVariance: params.pressureVariance,
-      // A dab can carry at most 3.2 world units of paint before it needs "reloading" — that
-      // cap is what forces the longest bones (thighs/shins, ~7.3 units in the CMU data) to be
-      // covered by several dabs (~3-4) rather than one long stroke, while short bones
-      // (hands, feet, fingers) still get just one.
-      maxStrokeLength: 3.2,
-      minStrokeLength: 1.0,
+      // A dab can carry at most this many world units of paint before it needs "reloading" —
+      // kept short relative to a limb's own length (thighs/shins, ~7.3 units in the CMU
+      // data) so several dabs always overlap-build a limb rather than one or two big dabs
+      // reading as their own distinct segments with a visible seam between them.
+      maxStrokeLength: 1.8,
+      minStrokeLength: 0.6,
       // Calibrated so a "fast" limb (across-bone speed ~0.45, roughly the speckle-fling
       // threshold's neighborhood) sits near the maxWaverBlend cap rather than far under it.
       // maxWaverBlend MUST stay below 0.5 (see the doc comment on BoneStrokeStyle) or the

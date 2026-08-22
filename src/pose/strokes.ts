@@ -129,10 +129,20 @@ export function generateChainStrokes(
     // therefore the visible dab pattern, continuous as the brush crosses joints.
     let dabSlot = 0;
 
+    // Width at each JOINT, not each bone — a real limb narrows continuously along its length,
+    // it doesn't step in diameter exactly at a knee or elbow. The first/last joints just take
+    // their one adjacent bone's thickness; interior joints blend the two bones meeting there,
+    // so interpolating between consecutive entries below gives a smooth taper along the whole
+    // chain instead of a hard jump at every bone boundary — see docs/work/pose-pipeline.md.
+    const jointThickness: number[] = chain.jointPath.map((_, i) => {
+      if (i === 0) return chain.thickness[0];
+      if (i === chain.jointPath.length - 1) return chain.thickness[chain.thickness.length - 1];
+      return (chain.thickness[i - 1] + chain.thickness[i]) / 2;
+    });
+
     for (let segIndex = 0; segIndex < chain.jointPath.length - 1 && dabSlot < MAX_DABS_PER_CHAIN_SAFETY; segIndex++) {
       const parentIndex = chain.jointPath[segIndex];
       const childIndex = chain.jointPath[segIndex + 1];
-      const thickness = chain.thickness[segIndex];
 
       const segStartPos = jointWorldPosition(cache, dancerIndex, frame, parentIndex);
       const targetPos = jointWorldPosition(cache, dancerIndex, frame, childIndex);
@@ -178,6 +188,7 @@ export function generateChainStrokes(
         const t = Math.max(0, Math.min(1, 1 - distToTarget / segLen));
         const { velocity } = sampleBoneAtT(cache, parentIndex, childIndex, dancerIndex, frame, t);
         const speed = Math.hypot(velocity[0], velocity[1], velocity[2]);
+        const thickness = jointThickness[segIndex] * (1 - t) + jointThickness[segIndex + 1] * t;
 
         // Split velocity into "along the bone" (irrelevant — the walk already has its own
         // travel direction) and "across the bone" (a rotating limb's actual visible motion
