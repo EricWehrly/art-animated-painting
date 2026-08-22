@@ -309,3 +309,44 @@ Verified visually at frame 25 (calm) and frame 180 (duress on, mid-motion, no co
 errors): limbs read as continuous painted forms rather than segmented/beaded chains — a
 clear improvement over Round 5's per-bone version at the same calibration frame, though not
 independently re-litigated against the reference photos again this round.
+
+### Round 7: contiguity broke under real motion — independent per-dab pushes don't compose
+
+User's read on the frame-180 (duress on) screenshot sent at the end of Round 6: "It looks no
+differently than before, just a bunch of flat lines... disjointed and separated." Round 6
+only verified motion frames by eye for "no console errors," not for whether the chain fix
+actually held under motion — it didn't. Root cause: each dab's position was still computed
+independently — an idealized point along the bone's straight line, PLUS a sideways offset
+(`push = acrossSpeed * forceScale`) from THAT dab's own local velocity. Two adjacent dabs
+sample different local velocities (a rotating limb's tip and base move differently, correctly
+per Round 3/4), so their independent sideways pushes don't match — under real motion the
+"chain" tore apart into visibly disconnected floating strokes, exactly what the user
+described. The Round 6 cap-continuity fix only addressed the *taper* at dab boundaries; it
+never addressed the dabs' actual positions coming apart.
+
+Rewrote `generateChainStrokes` as a genuine seeking agent rather than a formula sampled
+independently per dab: the brush carries a real current position (wherever the *previous* dab
+actually left it, not recomputed from an idealized line) and a target (the next joint). Every
+dab's heading is "straight at the target," bent by that point's local sideways velocity
+(`maxWaverBlend`) — motion influences *where the brush points next*, never an independent
+offset tacked onto a separately-computed position. Because the next dab always starts exactly
+where the last one ended, contiguity now holds by construction, under any amount of motion.
+
+This introduced a real bug of its own, caught by a second look at the render rather than by
+reasoning about it in advance: with `maxWaverBlend` at its Round 6 value (0.55), the sideways
+impulse could outweigh the target-seeking pull (>50% of the blend). At frame 180 this
+produced enormous sweeping arcs reaching far outside the figure — the walk wasn't guaranteed
+to ever get closer to its target, so on a fast-motion frame it ran away in a mostly-straight
+line for up to `MAX_DABS_PER_CHAIN_SAFETY` (40) dabs before the safety cap cut it off. Fixed
+two ways: `maxWaverBlend` capped at 0.4, documented as a hard correctness constraint (must
+stay below 0.5, or there is no guarantee the target-ward component of a step is ever
+positive — see the `BoneStrokeStyle.maxWaverBlend` doc comment for the argument); and the
+per-dab velocity sample's `t` (how far along the current bone) is now derived from remaining
+distance-to-target (`1 - distToTarget / segLen`) instead of spatially projecting the brush's
+actual (possibly drifted) position — the projection saturates at 0/1 once the brush drifts
+off-axis, which was locking velocity sampling onto a constant value for many consecutive
+dabs and compounding the runaway.
+
+Verified visually at frame 180 (the same frame that showed both the disjointed strokes and,
+after the first fix attempt, the runaway arcs): the figure is compact and bounded again, with
+visible per-limb waver/bend under motion and no runaway excursions.

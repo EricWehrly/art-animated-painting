@@ -1,4 +1,5 @@
 import type { PoseCache } from "./pose-cache";
+import { jointWorldPosition } from "./pose-cache";
 import type { Chain } from "./skeleton";
 import { sampleBoneAtT, type Emitter } from "./emitters";
 
@@ -46,13 +47,15 @@ export interface BoneStrokeStyle {
   /** Shortest a dab can be, even at minimum paint pickup — keeps low-paintLoad strokes from
    * collapsing to invisible specks. */
   minStrokeLength: number;
-  /** How much a dab's own sideways (across-the-bone) instantaneous velocity pushes its
-   * position and bends its direction away from the bone's own axis — see the comment on
-   * generateChainStrokes for why it's the sideways component specifically, not full velocity. */
-  forceScale: number;
-  /** Caps how far a dab's orientation can bend away from the bone axis toward the sideways
-   * velocity direction (0 = never bends, stays exactly bone-aligned; ~0.5-0.6 = a visible
-   * flowing waver without ever flipping to point across the limb). */
+  /** Caps how far the brush's heading can bend away from "straight at its target joint"
+   * toward the sideways velocity direction. MUST stay below 0.5: the target-seeking
+   * component has to keep a strict majority of the blend, or there is no guarantee the walk
+   * ever gets closer to its target — at >=0.5 the sideways impulse can dominate every step,
+   * and since the target is fixed but the impulse direction isn't reliably related to it, the
+   * walk can run away in a long, mostly-straight excursion (this happened at 0.55; see
+   * docs/work/pose-pipeline.md Round 7) instead of converging within a sane number of dabs.
+   * Below 0.5, the target-ward component of every step is provably positive even in the
+   * worst case (impulse pointing exactly away from the target), guaranteeing convergence. */
   maxWaverBlend: number;
   waverScale: number;
   /** How much local (total) instantaneous speed further stretches a dab's rendered length
@@ -75,32 +78,33 @@ const MAX_DABS_PER_CHAIN_SAFETY = 40; // guards against a runaway loop on degene
  * Walks each CHAIN (a whole unbranched limb — e.g. hip to toe, or shoulder to wrist; see
  * skeleton.ts buildChains) from its start joint to its end joint as one continuous traveling
  * brush, laying down dabs of paint along the way — "connect the dots" in the sense of tracing
- * the limb's own shape, not stamping each bone independently. This is deliberately NOT "one
- * stroke per bone": painting each bone as its own isolated decision was what made the figure
- * read as a literal skeleton diagram (you could see where each individual bone was, rather
- * than a continuous painted limb) — treating a whole chain as a single ongoing brush pass,
- * only ever restarting ("returning to the paint tray") at branch points between chains,
- * is what makes it read as a figure instead. A dab's length is however far its
- * randomly-varying paint load can carry (capped at maxStrokeLength), so a long chain
- * naturally needs several dabs to cover while a short one needs only one — and when a dab
- * would run past the end of its current bone, the walk continues seamlessly into the next
- * bone in the chain rather than stopping, so consecutive dabs stay position-continuous
- * across a joint (the brush passes through an elbow or knee without lifting).
+ * the limb's own shape, not stamping each bone independently.
  *
- * Orientation is the CURRENT bone's own axis, waved by that dab's own instantaneous SIDEWAYS
- * velocity — sampled fresh at each dab's own position (see emitters.ts sampleBoneAtT),
- * deliberately per-dab, not one velocity averaged across a whole bone or chain (see
- * docs/work/pose-pipeline.md Round 3). Using the FULL instantaneous velocity as the
- * orientation outright (tried in Round 3) was wrong for a different reason: a point on a
- * rotating rigid body moves roughly perpendicular to the radius from its pivot, and a bone
- * IS that radius — so a swinging limb's velocity points mostly ACROSS the bone, not along
- * it. The fix (Round 4, unchanged here): decompose velocity relative to the current bone's
- * axis. The along-bone component barely matters for direction (it's already the walk's own
- * travel direction). The across-bone component is what should visibly bend the stroke —
- * layered onto the bone axis and capped at maxWaverBlend, not substituted for it — the
- * "impulse from the bones applies force to the brush strokes... in the direction they're
- * moving" the brief asked for, but happening WITHIN the confines of the brush's own intent to
- * trace the limb, not replacing that intent. See docs/work/pose-pipeline.md "Strokes".
+ * The brush is a genuine seeking agent, not a formula sampled independently at each dab: it
+ * has a current position (wherever the previous dab actually left it) and a target (the next
+ * joint along the chain), and every dab's heading is "straight at the target," bent by that
+ * point's own instantaneous SIDEWAYS velocity (capped at maxWaverBlend) — the "impulse from
+ * the bones applies force... in the direction they're moving" the brief asked for, but
+ * happening WITHIN the confines of the brush's own intent to reach the joint, not replacing
+ * it. Critically, this heading is always computed fresh from the brush's ACTUAL current
+ * position toward the target, so the walk self-corrects and stays exactly contiguous no
+ * matter how much motion bends it.
+ *
+ * An earlier version (see docs/work/pose-pipeline.md Round 6) computed each dab's position
+ * independently — an idealized point along the bone's straight line, PLUS a sideways offset
+ * from that dab's own local velocity — and that was wrong in a way that only showed up under
+ * real motion: two adjacent dabs sample different local velocities (a rotating limb's tip and
+ * base move differently), so their independent sideways offsets don't match, and the "chain"
+ * visibly tore apart into disconnected floating strokes the moment anything was actually
+ * moving. Continuing the walk from the brush's own last position, instead of recomputing
+ * position from scratch each time, is what makes contiguity hold under motion instead of only
+ * at rest.
+ *
+ * Sideways velocity is still sampled fresh per-dab at (an estimate of) the brush's own
+ * position, not one velocity averaged across a whole bone or chain (see
+ * docs/work/pose-pipeline.md Round 3) — a rotating limb's tip and base still move
+ * differently, that part of the diagnosis was correct. See docs/work/pose-pipeline.md
+ * "Strokes".
  *
  * Needs cache/frame access to sample arbitrary points adaptively as the walk proceeds, so
  * (unlike the rest of this module) it isn't a pure data transform over pre-computed samples.
@@ -120,36 +124,64 @@ export function generateChainStrokes(
     // an interior seam and must not taper (see the Stroke.capStart/capEnd doc comment).
     const chainDabs: Omit<Stroke, "capStart" | "capEnd">[] = [];
 
+    let brushPos = jointWorldPosition(cache, dancerIndex, frame, chain.jointPath[0]);
     // Runs across the WHOLE chain, not reset per bone — keeps paint-load identity, and
     // therefore the visible dab pattern, continuous as the brush crosses joints.
     let dabSlot = 0;
+
     for (let segIndex = 0; segIndex < chain.jointPath.length - 1 && dabSlot < MAX_DABS_PER_CHAIN_SAFETY; segIndex++) {
       const parentIndex = chain.jointPath[segIndex];
       const childIndex = chain.jointPath[segIndex + 1];
       const thickness = chain.thickness[segIndex];
 
-      const { position: parentPos } = sampleBoneAtT(cache, parentIndex, childIndex, dancerIndex, frame, 0);
-      const { position: childPos } = sampleBoneAtT(cache, parentIndex, childIndex, dancerIndex, frame, 1);
+      const segStartPos = jointWorldPosition(cache, dancerIndex, frame, parentIndex);
+      const targetPos = jointWorldPosition(cache, dancerIndex, frame, childIndex);
       const segVec: [number, number, number] = [
-        childPos[0] - parentPos[0],
-        childPos[1] - parentPos[1],
-        childPos[2] - parentPos[2],
+        targetPos[0] - segStartPos[0],
+        targetPos[1] - segStartPos[1],
+        targetPos[2] - segStartPos[2],
       ];
       const segLen = Math.hypot(segVec[0], segVec[1], segVec[2]);
       // Rig stub joints (zero-offset rotation pivots, e.g. BVH's "Neck"/"LHipJoint") have no
       // real length and nothing to paint — pass straight through to the next bone in the
       // chain rather than emitting a degenerate zero-length dab.
-      if (segLen < 0.05) continue;
+      if (segLen < 0.05) {
+        brushPos = targetPos;
+        continue;
+      }
       const segDir: [number, number, number] = [segVec[0] / segLen, segVec[1] / segLen, segVec[2] / segLen];
 
-      let t = 0;
-      while (t < 0.999 && dabSlot < MAX_DABS_PER_CHAIN_SAFETY) {
+      while (dabSlot < MAX_DABS_PER_CHAIN_SAFETY) {
+        const toTarget: [number, number, number] = [
+          targetPos[0] - brushPos[0],
+          targetPos[1] - brushPos[1],
+          targetPos[2] - brushPos[2],
+        ];
+        const distToTarget = Math.hypot(toTarget[0], toTarget[1], toTarget[2]);
+        if (distToTarget < 0.02) {
+          brushPos = targetPos;
+          break;
+        }
+        const desiredDir: [number, number, number] = [
+          toTarget[0] / distToTarget,
+          toTarget[1] / distToTarget,
+          toTarget[2] / distToTarget,
+        ];
+
+        // How far along this bone the brush has effectively progressed, for sampling that
+        // point's own local velocity — derived from remaining distance-to-target rather than
+        // spatially projecting the brush's (possibly drifted) actual position. A spatial
+        // projection saturates at 0/1 once the brush drifts off the bone's straight line,
+        // which locks velocity sampling onto a CONSTANT value every subsequent step instead
+        // of it varying as the walk proceeds — a fixed bias repeated over many dabs is exactly
+        // what turns a wobble into a runaway straight-line excursion.
+        const t = Math.max(0, Math.min(1, 1 - distToTarget / segLen));
         const { velocity } = sampleBoneAtT(cache, parentIndex, childIndex, dancerIndex, frame, t);
         const speed = Math.hypot(velocity[0], velocity[1], velocity[2]);
 
-        // Split velocity into "along the bone" (irrelevant to direction — that's already the
-        // walk's own travel axis) and "across the bone" (a rotating limb's actual visible
-        // motion relative to its own shape — this is what should wave the stroke).
+        // Split velocity into "along the bone" (irrelevant — the walk already has its own
+        // travel direction) and "across the bone" (a rotating limb's actual visible motion
+        // relative to its own shape — this is what should wave the heading).
         const velAlong = velocity[0] * segDir[0] + velocity[1] * segDir[1] + velocity[2] * segDir[2];
         const velAcross: [number, number, number] = [
           velocity[0] - velAlong * segDir[0],
@@ -158,19 +190,19 @@ export function generateChainStrokes(
         ];
         const acrossSpeed = Math.hypot(velAcross[0], velAcross[1], velAcross[2]);
         const acrossDir: [number, number, number] =
-          acrossSpeed > 1e-4 ? [velAcross[0] / acrossSpeed, velAcross[1] / acrossSpeed, velAcross[2] / acrossSpeed] : segDir;
+          acrossSpeed > 1e-4 ? [velAcross[0] / acrossSpeed, velAcross[1] / acrossSpeed, velAcross[2] / acrossSpeed] : desiredDir;
 
         const waverBlend = Math.min(acrossSpeed * style.waverScale, style.maxWaverBlend);
-        const paintDirRaw: [number, number, number] = [
-          segDir[0] * (1 - waverBlend) + acrossDir[0] * waverBlend,
-          segDir[1] * (1 - waverBlend) + acrossDir[1] * waverBlend,
-          segDir[2] * (1 - waverBlend) + acrossDir[2] * waverBlend,
+        const headingRaw: [number, number, number] = [
+          desiredDir[0] * (1 - waverBlend) + acrossDir[0] * waverBlend,
+          desiredDir[1] * (1 - waverBlend) + acrossDir[1] * waverBlend,
+          desiredDir[2] * (1 - waverBlend) + acrossDir[2] * waverBlend,
         ];
-        const paintDirLen = Math.hypot(paintDirRaw[0], paintDirRaw[1], paintDirRaw[2]) || 1;
-        const paintDir: [number, number, number] = [
-          paintDirRaw[0] / paintDirLen,
-          paintDirRaw[1] / paintDirLen,
-          paintDirRaw[2] / paintDirLen,
+        const headingLen = Math.hypot(headingRaw[0], headingRaw[1], headingRaw[2]) || 1;
+        const heading: [number, number, number] = [
+          headingRaw[0] / headingLen,
+          headingRaw[1] / headingLen,
+          headingRaw[2] / headingLen,
         ];
 
         const identity = chainIndex * 733 + dabSlot * 7 + 0.5;
@@ -180,37 +212,28 @@ export function generateChainStrokes(
         // both goes further AND deposits more material, not two independent coincidences.
         const paintLoad = hash(identity);
 
-        // Coverage math (deciding how much of this bone the dab consumes) uses the UNSCALED
-        // base length — lengthScale below is a pure rendered-size knob and must not change
-        // stroke count/coverage.
+        // Never overshoot the target in one dab — clamping to distToTarget is what lets the
+        // walk hand off cleanly to the next joint/segment instead of blowing past it.
         const baseLength = style.minStrokeLength + paintLoad * (style.maxStrokeLength - style.minStrokeLength);
-        const tSpan = Math.min(1 - t, baseLength / segLen);
-        const tCenter = t + tSpan / 2;
+        const stepLength = Math.min(distToTarget, Math.min(style.maxStrokeLength, baseLength * (1 + speed * style.smearScale)));
 
-        const centerPos: [number, number, number] = [
-          parentPos[0] + segVec[0] * tCenter,
-          parentPos[1] + segVec[1] * tCenter,
-          parentPos[2] + segVec[2] * tCenter,
+        const newPos: [number, number, number] = [
+          brushPos[0] + heading[0] * stepLength,
+          brushPos[1] + heading[1] * stepLength,
+          brushPos[2] + heading[2] * stepLength,
         ];
-        // Position gets pushed sideways too, not just the direction bent — a limb swinging
-        // through the air should read as paint visibly drifting off its resting line, not
-        // just strokes that lean while staying perfectly centered on it.
-        const push = acrossSpeed * style.forceScale;
-        const position: [number, number, number] = [
-          centerPos[0] + acrossDir[0] * push,
-          centerPos[1] + acrossDir[1] * push,
-          centerPos[2] + acrossDir[2] * push,
+        const dabCenter: [number, number, number] = [
+          (brushPos[0] + newPos[0]) / 2,
+          (brushPos[1] + newPos[1]) / 2,
+          (brushPos[2] + newPos[2]) / 2,
         ];
 
-        const renderLength = Math.max(
-          0.15,
-          Math.min(style.maxStrokeLength, baseLength * (1 + speed * style.smearScale)) * style.lengthScale
-        );
+        const renderLength = Math.max(0.15, stepLength * style.lengthScale);
         const pressure = 1 + style.pressureVariance * (paintLoad * 2 - 1);
 
         chainDabs.push({
-          position,
-          velocity: paintDir,
+          position: dabCenter,
+          velocity: heading,
           length: renderLength,
           width: thickness * style.widthScale * pressure,
           volume: (0.15 + speed * style.volumeScale) * pressure,
@@ -218,7 +241,7 @@ export function generateChainStrokes(
           seed: identity * 0.6180339887,
         });
 
-        t += tSpan;
+        brushPos = newPos;
         dabSlot++;
       }
     }

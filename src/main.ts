@@ -106,11 +106,13 @@ async function main() {
       // (hands, feet, fingers) still get just one.
       maxStrokeLength: 3.2,
       minStrokeLength: 1.0,
-      forceScale: params.duress ? 3.0 : 0,
       // Calibrated so a "fast" limb (across-bone speed ~0.45, roughly the speckle-fling
       // threshold's neighborhood) sits near the maxWaverBlend cap rather than far under it.
+      // maxWaverBlend MUST stay below 0.5 (see the doc comment on BoneStrokeStyle) or the
+      // brush's target-seeking loses its guaranteed majority and can run away instead of
+      // converging — 0.4 keeps a comfortable margin.
       waverScale: params.duress ? 1.2 : 0,
-      maxWaverBlend: params.duress ? 0.55 : 0,
+      maxWaverBlend: params.duress ? 0.4 : 0,
       smearScale: params.duress ? 1.5 : 0,
     };
   }
