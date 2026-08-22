@@ -13,12 +13,16 @@ const strokeVertexShader = /* glsl */ `
   in float iVolume;
   in vec3 iColor;
   in float iSeed;
+  in float iCapStart;
+  in float iCapEnd;
 
   out vec2 vUv;
   out vec3 vColor;
   out float vVolume;
   out float vSeed;
   out float vWidth;
+  out float vCapStart;
+  out float vCapEnd;
 
   void main() {
     vec3 viewCenter = (modelViewMatrix * vec4(iCenter, 1.0)).xyz;
@@ -39,6 +43,8 @@ const strokeVertexShader = /* glsl */ `
     vVolume = iVolume;
     vSeed = iSeed;
     vWidth = iWidth;
+    vCapStart = iCapStart;
+    vCapEnd = iCapEnd;
   }
 `;
 
@@ -59,11 +65,17 @@ const strokeShapeGLSL = /* glsl */ `
   float widthMask = 1.0 - smoothstep(edgeStart, edgeStart + 0.38, across);
 
   // Same idea applied to the tip/tail so the stroke's ends look dragged/lifted-off rather
-  // than perfectly rounded caps.
+  // than perfectly rounded caps — but ONLY at a true endpoint of a brush pass (vCapStart/
+  // vCapEnd, set per-instance in pose/strokes.ts). An interior seam between two dabs that are
+  // actually continuing the same chain must stay at full coverage right to its edge, or a
+  // chain of touching dabs pinches closed at every join and reads as a beaded/dashed line
+  // instead of one continuous painted limb — see docs/work/pose-pipeline.md Round 6.
   float capTear = 0.5 + 0.5 * sin(vUv.y * 7.0 + vSeed * 9.0);
-  float capStart = mix(0.0, 0.05, capTear);
-  float capEnd = mix(0.84, 0.94, capTear);
-  float endCap = smoothstep(capStart, capStart + 0.1, along) * (1.0 - smoothstep(capEnd, capEnd + 0.08, along));
+  float tearCapStart = mix(0.0, 0.05, capTear);
+  float tearCapEnd = mix(0.84, 0.94, capTear);
+  float startFade = vCapStart > 0.5 ? smoothstep(tearCapStart, tearCapStart + 0.1, along) : 1.0;
+  float endFade = vCapEnd > 0.5 ? (1.0 - smoothstep(tearCapEnd, tearCapEnd + 0.08, along)) : 1.0;
+  float endCap = startFade * endFade;
 
   // Bristle ridges at a fixed WORLD-space spacing (not a fixed count across the UV range) —
   // a fixed cycle count aliased badly on narrow strokes, which is what read as "pixelly":
@@ -140,6 +152,8 @@ const colorFragmentShader = /* glsl */ `
   in float vVolume;
   in float vSeed;
   in float vWidth;
+  in float vCapStart;
+  in float vCapEnd;
 
   out vec4 outColor;
 
@@ -172,6 +186,8 @@ const heightFragmentShader = /* glsl */ `
   in float vVolume;
   in float vSeed;
   in float vWidth;
+  in float vCapStart;
+  in float vCapEnd;
 
   out vec4 outColor;
 
@@ -209,6 +225,8 @@ interface InstancedAttrs {
   iVolume: THREE.InstancedBufferAttribute;
   iColor: THREE.InstancedBufferAttribute;
   iSeed: THREE.InstancedBufferAttribute;
+  iCapStart: THREE.InstancedBufferAttribute;
+  iCapEnd: THREE.InstancedBufferAttribute;
 }
 
 function createInstancedGeometry(maxInstances: number): InstancedAttrs {
@@ -223,12 +241,24 @@ function createInstancedGeometry(maxInstances: number): InstancedAttrs {
   const iVolume = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances), 1);
   const iColor = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances * 3), 3);
   const iSeed = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances), 1);
-  for (const [name, attr] of Object.entries({ iCenter, iVelocity, iWidth, iLength, iVolume, iColor, iSeed })) {
+  const iCapStart = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances), 1);
+  const iCapEnd = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances), 1);
+  for (const [name, attr] of Object.entries({
+    iCenter,
+    iVelocity,
+    iWidth,
+    iLength,
+    iVolume,
+    iColor,
+    iSeed,
+    iCapStart,
+    iCapEnd,
+  })) {
     attr.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute(name, attr);
   }
 
-  return { geometry, iCenter, iVelocity, iWidth, iLength, iVolume, iColor, iSeed };
+  return { geometry, iCenter, iVelocity, iWidth, iLength, iVolume, iColor, iSeed, iCapStart, iCapEnd };
 }
 
 function writeStrokes(attrs: InstancedAttrs, strokes: Stroke[], maxInstances: number) {
@@ -237,6 +267,8 @@ function writeStrokes(attrs: InstancedAttrs, strokes: Stroke[], maxInstances: nu
     const s = strokes[i];
     attrs.iCenter.setXYZ(i, s.position[0], s.position[1], s.position[2]);
     attrs.iVelocity.setXYZ(i, s.velocity[0], s.velocity[1], s.velocity[2]);
+    attrs.iCapStart.setX(i, s.capStart ? 1 : 0);
+    attrs.iCapEnd.setX(i, s.capEnd ? 1 : 0);
     attrs.iWidth.setX(i, s.width);
     attrs.iLength.setX(i, s.length);
     attrs.iVolume.setX(i, s.volume);
@@ -251,6 +283,8 @@ function writeStrokes(attrs: InstancedAttrs, strokes: Stroke[], maxInstances: nu
   attrs.iVolume.needsUpdate = true;
   attrs.iColor.needsUpdate = true;
   attrs.iSeed.needsUpdate = true;
+  attrs.iCapStart.needsUpdate = true;
+  attrs.iCapEnd.needsUpdate = true;
 }
 
 function makeStrokeMaterial(fragmentShader: string): THREE.ShaderMaterial {

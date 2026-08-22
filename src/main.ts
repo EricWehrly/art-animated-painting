@@ -5,9 +5,9 @@ import { createTimeline } from "./shell/timeline";
 import { createParamsPanel, loadParamsFromHash, saveParamsToHash, defaultParams, type ToyParams } from "./shell/params";
 import { capturePNG } from "./shell/capture";
 import { loadPoseCache } from "./pose/pose-cache";
-import { boneSegments } from "./pose/skeleton";
+import { boneSegments, buildChains } from "./pose/skeleton";
 import { generateEmitters } from "./pose/emitters";
-import { generateBoneStrokes, generateSpeckles, type Stroke, type BoneStrokeStyle, type SpeckleStyle } from "./pose/strokes";
+import { generateChainStrokes, generateSpeckles, type Stroke, type BoneStrokeStyle, type SpeckleStyle } from "./pose/strokes";
 import { createStrokeMesh } from "./paint/stroke-mesh";
 import { createHeightPass } from "./paint/height-pass";
 import { createShadingPass } from "./paint/shading-pass";
@@ -26,20 +26,24 @@ async function main() {
   const pane = createParamsPanel(app, params);
 
   const cache = await loadPoseCache("/data");
+  // Main strokes walk whole CHAINS (a whole limb, e.g. hip-to-toe or shoulder-to-wrist) as one
+  // continuous traveling brush — see generateChainStrokes in pose/strokes.ts and buildChains
+  // in pose/skeleton.ts. `bones` (the old per-bone list) is kept only for speckle placement,
+  // which still wants independent per-bone velocity sampling, not chain-level coverage.
   const bones = boneSegments(cache.header.joints);
+  const chains = buildChains(cache.header.joints);
   const frameCount = cache.header.frameCount;
   timeline.setFrameCount(frameCount);
 
-  // Main strokes now walk each bone laying down as many paint dabs as it takes to cover it
-  // (see generateBoneStrokes in pose/strokes.ts) rather than a fixed sampling — a long bone
-  // at minimum paint load could in principle need up to ~8 dabs at the style values below;
-  // this is generous headroom above that, not a hard limit the walk itself respects (that's
-  // MAX_DABS_PER_BONE_SAFETY inside generateBoneStrokes). Speckles still sample several fixed
-  // points per bone since they want the velocity spread along a rotating limb, not coverage.
-  const maxDabsPerBoneBudget = 10;
+  // A long chain (leg: hip to toe, ~19 world units) at minimum paint load could in principle
+  // need ~20 dabs at the style values below; this is generous headroom above that, not a hard
+  // limit the walk itself respects (that's MAX_DABS_PER_CHAIN_SAFETY inside
+  // generateChainStrokes). Speckles still sample several fixed points per bone since they
+  // want the velocity spread along a rotating limb, not coverage.
+  const maxDabsPerChainBudget = 30;
   const speckleSamplesPerBone = 3;
   const speckleMaxCount = 6;
-  const mainStrokesTotal = bones.length * maxDabsPerBoneBudget * cache.header.dancers.length;
+  const mainStrokesTotal = chains.length * maxDabsPerChainBudget * cache.header.dancers.length;
   const speckleEmittersTotal = bones.length * speckleSamplesPerBone * cache.header.dancers.length;
   // Generous headroom for speckles on top of the main strokes — setStrokes() silently caps
   // at this budget, so this only needs to comfortably cover the worst case, not be exact.
@@ -126,7 +130,7 @@ async function main() {
   function renderFrame(frame: number) {
     const allStrokes: Stroke[] = [];
     for (let dancerIndex = 0; dancerIndex < cache.header.dancers.length; dancerIndex++) {
-      allStrokes.push(...generateBoneStrokes(cache, bones, dancerIndex, frame, strokeStyleFor(dancerIndex)));
+      allStrokes.push(...generateChainStrokes(cache, chains, dancerIndex, frame, strokeStyleFor(dancerIndex)));
       // Speckles are a fling/spatter effect from motion — meaningless (and distracting from
       // the base figure) in calm calibration mode.
       if (params.duress && params.speckleAmount > 0) {

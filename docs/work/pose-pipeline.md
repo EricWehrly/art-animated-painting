@@ -258,3 +258,54 @@ segments, reads fine), bent arms, legs in a natural weight-shifted stance — wi
 speckle noise and no finger clutter. This is the calibration baseline Round 4's motion
 effects (waver/push/smear) get judged against; toggling `duress` back on with the same
 scrub position is now the direct A/B for "how much did motion just add."
+
+### Round 6: still "too skeletal" — paint chains, not bones, and stop pinching every seam
+
+User's response to Round 5's calibration figure, reframed again: even calm, the figure looked
+"too skeletal — you can see the bones through the image." The complaint wasn't about motion
+at all, it was that coverage was still organized *per bone* — each bone got its own
+independent dabs, so the figure read as a literal skeleton diagram (individual segments
+visible) rather than a continuously painted body. Proposed model: the brush should "know
+where it wants to go and work to get there," painting each limb as one ongoing pass with
+occasional breaks "to return to the paint tray" — not a mesh, not a third dimension, just a
+brush that travels rather than stamps.
+
+Two changes, one data-model and one rendering:
+
+- **`skeleton.ts` `buildChains`**: groups bones into maximal *unbranched* chains — a chain
+  ends only at a leaf or a branch point (a joint with 2+ children). Run against the actual
+  rig, this produces exactly 6 chains per dancer: left leg (hip→toe), right leg,
+  spine→Spine1, Spine1→neck→head, left arm (shoulder→wrist), right arm. This maps precisely
+  onto "paint each limb as one continuous pass, lift only at the joints where limbs actually
+  branch" — the lift points are also exactly where limbs visually attach, so the figure still
+  reads as fully connected even though each chain's paint decisions are independent.
+- **`strokes.ts` `generateChainStrokes`** replaces `generateBoneStrokes`: walks a whole chain
+  end to end. When a dab's paint-load-based length would run past the end of its current
+  bone, the walk continues seamlessly into the next bone in the chain (new `dabSlot` counter
+  runs across the WHOLE chain, not reset per bone) rather than stopping — so consecutive dabs
+  stay position-continuous across a joint, the brush passes through an elbow or knee without
+  lifting. Per-dab orientation/waver logic (Round 4) is unchanged, just re-parameterized by
+  "the bone currently under the brush" instead of one fixed bone.
+
+That alone wasn't enough — the figure was still visibly seamed. The remaining cause was in
+`stroke-mesh.ts`: every dab's billboard quad tapers to a point at BOTH ends (the brush-cap
+shape, with the ragged-edge tear from an earlier round). Even dabs that are perfectly
+position-continuous still each pinch closed at their own tips, so a chain of touching dabs
+reads as a beaded/dashed line rather than one stroke — the taper itself was the "you can see
+the bones" cause, independent of coverage gaps. Fixed by giving `Stroke` two new fields,
+`capStart`/`capEnd`: true only for the actual first/last dab of a whole chain (or always true
+for speckles and swatch strokes, which are genuinely standalone). Threaded through as new
+per-instance attributes (`iCapStart`/`iCapEnd`) to a new pair of varyings in
+`strokeShapeGLSL`, which now only apply the tapered/ragged cap fade at a true endpoint —
+an interior seam between two dabs of the same chain renders at full coverage right to its
+edge instead.
+
+Also found via a script: root cause of an earlier confusing "Browser pane 0x0" issue was
+unrelated to the app — the automated browser tool's viewport can end up unset between
+sessions in this environment; `resize_window` before first interaction is the fix, not
+anything in the toy itself.
+
+Verified visually at frame 25 (calm) and frame 180 (duress on, mid-motion, no console
+errors): limbs read as continuous painted forms rather than segmented/beaded chains — a
+clear improvement over Round 5's per-bone version at the same calibration frame, though not
+independently re-litigated against the reference photos again this round.

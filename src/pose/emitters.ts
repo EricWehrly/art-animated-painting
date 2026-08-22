@@ -12,11 +12,16 @@ export interface Emitter {
 }
 
 /**
- * Samples one point at fraction `t` along a bone segment (0 = parent joint, 1 = child joint)
- * for one dancer at one frame, returning that point's own position and instantaneous velocity
- * (true central difference against the neighbouring baked frames — noticeably less noisy than
- * a one-sided difference, which matters here: slow bones have tiny per-frame deltas, and
- * finite-difference noise on those was showing up as incoherent stroke orientation).
+ * Samples one point at fraction `t` along the segment from `parentIndex` to `childIndex` (0 =
+ * parent joint, 1 = child joint) for one dancer at one frame, returning that point's own
+ * position and instantaneous velocity (true central difference against the neighbouring
+ * baked frames — noticeably less noisy than a one-sided difference, which matters here: slow
+ * bones have tiny per-frame deltas, and finite-difference noise on those was showing up as
+ * incoherent stroke orientation).
+ *
+ * Takes raw joint indices rather than a `BoneSegment` so the same helper works for a chain's
+ * current segment as it travels across several bones (see pose/strokes.ts
+ * generateChainStrokes), not just one bone in isolation.
  *
  * Deliberately a per-point query, not "the bone's velocity" — a rotating limb's tip and base
  * move differently, and averaging them into one value per bone was tried and rejected (see
@@ -25,29 +30,30 @@ export interface Emitter {
  */
 export function sampleBoneAtT(
   cache: PoseCache,
-  bone: BoneSegment,
+  parentIndex: number,
+  childIndex: number,
   dancerIndex: number,
   frame: number,
   t: number
 ): { position: [number, number, number]; velocity: [number, number, number] } {
-  const parentNow = jointWorldPosition(cache, dancerIndex, frame, bone.parentIndex);
-  const childNow = jointWorldPosition(cache, dancerIndex, frame, bone.childIndex);
+  const parentNow = jointWorldPosition(cache, dancerIndex, frame, parentIndex);
+  const childNow = jointWorldPosition(cache, dancerIndex, frame, childIndex);
   const position: [number, number, number] = [
     parentNow[0] + (childNow[0] - parentNow[0]) * t,
     parentNow[1] + (childNow[1] - parentNow[1]) * t,
     parentNow[2] + (childNow[2] - parentNow[2]) * t,
   ];
 
-  const parentPrev = jointWorldPosition(cache, dancerIndex, frame - 1, bone.parentIndex);
-  const childPrev = jointWorldPosition(cache, dancerIndex, frame - 1, bone.childIndex);
+  const parentPrev = jointWorldPosition(cache, dancerIndex, frame - 1, parentIndex);
+  const childPrev = jointWorldPosition(cache, dancerIndex, frame - 1, childIndex);
   const prevPosition: [number, number, number] = [
     parentPrev[0] + (childPrev[0] - parentPrev[0]) * t,
     parentPrev[1] + (childPrev[1] - parentPrev[1]) * t,
     parentPrev[2] + (childPrev[2] - parentPrev[2]) * t,
   ];
 
-  const parentNext = jointWorldPosition(cache, dancerIndex, frame + 1, bone.parentIndex);
-  const childNext = jointWorldPosition(cache, dancerIndex, frame + 1, bone.childIndex);
+  const parentNext = jointWorldPosition(cache, dancerIndex, frame + 1, parentIndex);
+  const childNext = jointWorldPosition(cache, dancerIndex, frame + 1, childIndex);
   const nextPosition: [number, number, number] = [
     parentNext[0] + (childNext[0] - parentNext[0]) * t,
     parentNext[1] + (childNext[1] - parentNext[1]) * t,
@@ -66,8 +72,8 @@ export function sampleBoneAtT(
 /**
  * Samples `samplesPerBone` evenly-spaced points along every bone segment for one dancer at
  * one frame. Used for speckle placement (generateSpeckles wants several velocity samples
- * along a rotating limb); main stroke coverage now walks each bone adaptively instead — see
- * pose/strokes.ts generateBoneStrokes.
+ * along a rotating limb); main stroke coverage now walks whole chains adaptively instead —
+ * see pose/strokes.ts generateChainStrokes.
  */
 export function generateEmitters(
   cache: PoseCache,
@@ -81,7 +87,7 @@ export function generateEmitters(
   for (const bone of bones) {
     for (let s = 0; s < samplesPerBone; s++) {
       const t = samplesPerBone === 1 ? 0.5 : s / (samplesPerBone - 1);
-      const { position, velocity } = sampleBoneAtT(cache, bone, dancerIndex, frame, t);
+      const { position, velocity } = sampleBoneAtT(cache, bone.parentIndex, bone.childIndex, dancerIndex, frame, t);
       emitters.push({ position, velocity, thickness: bone.thickness, t });
     }
   }

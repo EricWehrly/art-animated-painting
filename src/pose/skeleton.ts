@@ -22,6 +22,57 @@ export function boneSegments(joints: JointMeta[]): BoneSegment[] {
   return bones;
 }
 
+export interface Chain {
+  /** Ordered joint indices from this chain's start (the root, or a branch point) to its end
+   * (a leaf, or the next branch point where child chains continue). */
+  jointPath: number[];
+  /** Per-segment thickness — thickness[i] belongs to the (jointPath[i] -> jointPath[i+1])
+   * bone. One shorter than jointPath. */
+  thickness: number[];
+}
+
+/**
+ * Groups bones into maximal unbranched chains: the whole spine+neck+head is one chain, each
+ * arm is its own chain, each leg (hip to toe) is its own chain. A chain is meant to be
+ * painted as ONE continuous traveling brush path (see pose/strokes.ts generateChainStrokes)
+ * rather than each bone getting its own independent stroke decision — the figure only "lifts
+ * the brush" at branch points (shoulders, hips), which is also naturally where limbs attach,
+ * so the figure still reads as fully connected even though each chain's paint is independent.
+ * See docs/work/pose-pipeline.md.
+ */
+export function buildChains(joints: JointMeta[]): Chain[] {
+  const children: number[][] = joints.map(() => []);
+  for (let i = 0; i < joints.length; i++) {
+    const joint = joints[i];
+    if (joint.parentIndex === -1) continue;
+    if (isFingerBone(joint.name)) continue;
+    children[joint.parentIndex].push(i);
+  }
+
+  const chains: Chain[] = [];
+
+  function walk(startJoint: number) {
+    for (const firstChild of children[startJoint]) {
+      const jointPath = [startJoint, firstChild];
+      const thickness = [boneThickness(joints[firstChild].name)];
+      let current = firstChild;
+      while (children[current].length === 1) {
+        const next = children[current][0];
+        jointPath.push(next);
+        thickness.push(boneThickness(joints[next].name));
+        current = next;
+      }
+      chains.push({ jointPath, thickness });
+      if (children[current].length >= 2) walk(current);
+    }
+  }
+
+  const root = joints.findIndex((j) => j.parentIndex === -1);
+  if (root !== -1) walk(root);
+
+  return chains;
+}
+
 function isFingerBone(childJointName: string): boolean {
   const name = childJointName.toLowerCase();
   return (
