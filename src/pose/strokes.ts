@@ -1,4 +1,6 @@
-import type { Emitter, BoneSample } from "./emitters";
+import type { PoseCache } from "./pose-cache";
+import type { BoneSegment } from "./skeleton";
+import { sampleBoneAtT, type Emitter } from "./emitters";
 
 export interface Stroke {
   position: [number, number, number];
@@ -20,119 +22,134 @@ export interface Stroke {
 export interface BoneStrokeStyle {
   color: [number, number, number];
   widthScale: number;
+  /** Scales the rendered length of every stroke, purely a visual knob — does not change how
+   * many strokes a bone needs to cover itself (that's decided by min/maxStrokeLength below,
+   * pre-scale, so cranking this doesn't cause coverage gaps or overlaps). */
   lengthScale: number;
   volumeScale: number;
-  /** 0 = every stroke on a bone uses the same width/volume; 1 = strokes range roughly
-   * 0.5x-1.5x pressure. Deterministic per (bone, stroke slot), not per-frame — a stroke's
-   * "how hard was this one pressed" is a fixed identity, not a dice roll that would flicker
-   * as the pose animates. */
+  /** How much width/volume vary with how much paint a given dab "picked up" (0 = no
+   * variation, every dab is identical regardless of paintLoad; 1 = full range). Paint load is
+   * itself deterministic per (bone, stroke slot) — not per-frame — so it doesn't flicker as
+   * the pose animates. */
   pressureVariance: number;
-  /** World-space length a single stroke aims to cover. Bones longer than this split into
-   * multiple strokes (up to maxStrokesPerBone); shorter bones get one stroke sized to the
-   * whole bone. Set comfortably above the longest bone in the rig (thighs/shins, ~7.3 units
-   * in the CMU data) so nearly every bone gets exactly one stroke — "connect the dots" in as
-   * few strokes as possible, per the brief. */
-  targetStrokeLength: number;
-  maxStrokesPerBone: number;
-  /** How much a bone's own motion (not just its static parent->child direction) bends the
-   * paint direction and pushes the stroke's position — an arm swinging up, or a leg stepping
-   * forward, should read as strokes pushed that way, not just strokes sitting on the limb. */
+  /** Hard cap on a single dab's length — the brush can only carry so much paint before it
+   * needs reloading, which is what forces a long bone to be covered by several strokes. */
+  maxStrokeLength: number;
+  /** Shortest a dab can be, even at minimum paint pickup — keeps low-paintLoad strokes from
+   * collapsing to invisible specks. */
+  minStrokeLength: number;
+  /** How much local instantaneous speed further stretches a dab beyond its paint-load base
+   * length (still hard-capped at maxStrokeLength) and pushes its position along that
+   * velocity — the "force"/pressure the brief asked for: a fast-moving section smears
+   * further and lands ahead of where the limb currently is. */
   forceScale: number;
+  smearScale: number;
 }
 
-/** Deterministic pseudo-random in [0, 1) for a given identity — used both for per-stroke
- * pressure (below) and speckle placement (generateSpeckles). */
+/** Deterministic pseudo-random in [0, 1) for a given identity — used for per-stroke paint
+ * load/pressure (below) and speckle placement (generateSpeckles). */
 function hash(n: number): number {
   const s = Math.sin(n) * 43758.5453;
   return s - Math.floor(s);
 }
 
-const BONE_STROKE_OVERSHOOT = 1.2; // slight overlap beyond the bone's own endpoints, so
-// adjacent/covering strokes don't leave a visible gap at the joint.
+const MAX_DABS_PER_BONE_SAFETY = 20; // guards against a runaway loop on degenerate (near-zero
+// minStrokeLength, or pathologically long bone) data — not a normal limit in practice.
 
 /**
- * Converts per-bone samples into stroke instances that paint each bone segment directly —
- * "connect the dots": orientation follows the bone's own parent->child direction (so a still
- * limb still reads as that limb), motion only bends that direction and offsets position,
- * proportional to how much force/speed is behind it. See docs/work/pose-pipeline.md
- * "Strokes". Pure data transform — no GPU/three.js dependency.
+ * Walks each bone from parent to child laying down dabs of paint, "connect the dots" style —
+ * each dab's length is however far its randomly-varying paint load can carry (capped at
+ * maxStrokeLength), so a long bone naturally needs several dabs to cover while a short one
+ * needs only one. Each dab samples its OWN instantaneous velocity fresh at its own position
+ * along the bone (see emitters.ts sampleBoneAtT) — deliberately per-dab, not one velocity
+ * averaged across the whole bone and reused for every stroke on it (that was tried and
+ * produced strokes that all pointed identically regardless of where they sat — see
+ * docs/work/pose-pipeline.md Round 3). Orientation IS that instantaneous velocity, falling
+ * back to the bone's own static direction only when a point is essentially still (velocity
+ * direction is meaningless at zero speed). See docs/work/pose-pipeline.md "Strokes".
+ *
+ * Needs cache/frame access to sample arbitrary points adaptively as the walk proceeds, so
+ * (unlike the rest of this module) it isn't a pure data transform over pre-computed samples.
  */
-export function generateBoneStrokes(samples: BoneSample[], style: BoneStrokeStyle): Stroke[] {
+export function generateBoneStrokes(
+  cache: PoseCache,
+  bones: BoneSegment[],
+  dancerIndex: number,
+  frame: number,
+  style: BoneStrokeStyle
+): Stroke[] {
   const strokes: Stroke[] = [];
 
-  for (const sample of samples) {
+  bones.forEach((bone, boneIndex) => {
+    const { position: parentPos } = sampleBoneAtT(cache, bone, dancerIndex, frame, 0);
+    const { position: childPos } = sampleBoneAtT(cache, bone, dancerIndex, frame, 1);
     const boneVec: [number, number, number] = [
-      sample.childPosition[0] - sample.parentPosition[0],
-      sample.childPosition[1] - sample.parentPosition[1],
-      sample.childPosition[2] - sample.parentPosition[2],
+      childPos[0] - parentPos[0],
+      childPos[1] - parentPos[1],
+      childPos[2] - parentPos[2],
     ];
     const boneLen = Math.hypot(boneVec[0], boneVec[1], boneVec[2]);
     // Rig stub joints (zero-offset rotation pivots, e.g. BVH's "Neck"/"LHipJoint") have no
     // real length and nothing to paint — skip rather than emit a degenerate zero-length dab.
-    if (boneLen < 0.05) continue;
-
+    if (boneLen < 0.05) return;
     const boneDir: [number, number, number] = [boneVec[0] / boneLen, boneVec[1] / boneLen, boneVec[2] / boneLen];
 
-    const speed = Math.hypot(sample.velocity[0], sample.velocity[1], sample.velocity[2]);
-    const velDir: [number, number, number] =
-      speed > 1e-5
-        ? [sample.velocity[0] / speed, sample.velocity[1] / speed, sample.velocity[2] / speed]
-        : boneDir;
+    let t = 0;
+    let slot = 0;
+    while (t < 0.999 && slot < MAX_DABS_PER_BONE_SAFETY) {
+      const { velocity } = sampleBoneAtT(cache, bone, dancerIndex, frame, t);
+      const speed = Math.hypot(velocity[0], velocity[1], velocity[2]);
+      const velDir: [number, number, number] =
+        speed > 1e-4 ? [velocity[0] / speed, velocity[1] / speed, velocity[2] / speed] : boneDir;
 
-    // Capped well under 1 so a bone always stays recognizably aligned with the limb it
-    // represents, even at high speed — this is a push, not a replacement.
-    const forceBlend = Math.min(speed * style.forceScale, 0.6);
-    const paintDirRaw: [number, number, number] = [
-      boneDir[0] * (1 - forceBlend) + velDir[0] * forceBlend,
-      boneDir[1] * (1 - forceBlend) + velDir[1] * forceBlend,
-      boneDir[2] * (1 - forceBlend) + velDir[2] * forceBlend,
-    ];
-    const paintDirLen = Math.hypot(paintDirRaw[0], paintDirRaw[1], paintDirRaw[2]) || 1;
-    const paintDir: [number, number, number] = [
-      paintDirRaw[0] / paintDirLen,
-      paintDirRaw[1] / paintDirLen,
-      paintDirRaw[2] / paintDirLen,
-    ];
+      const identity = boneIndex * 131 + slot * 7 + 0.5;
+      // How much paint this dab picked up, 0..1 — drives both how far it can carry (length)
+      // and, scaled by pressureVariance, how thick/voluminous it lays down. One random draw
+      // for both, since physically they're the same thing: more paint on the brush means it
+      // both goes further AND deposits more material, not two independent coincidences.
+      const paintLoad = hash(identity);
 
-    const strokeCount = Math.max(
-      1,
-      Math.min(style.maxStrokesPerBone, Math.round(boneLen / style.targetStrokeLength))
-    );
-    const coverageLength = (boneLen / strokeCount) * BONE_STROKE_OVERSHOOT;
+      // Coverage math (deciding how much of the bone this dab consumes, and thus how many
+      // dabs the bone needs) uses the UNSCALED base length — lengthScale below is a pure
+      // rendered-size knob and must not change stroke count/coverage.
+      const baseLength = style.minStrokeLength + paintLoad * (style.maxStrokeLength - style.minStrokeLength);
+      const tSpan = Math.min(1 - t, baseLength / boneLen);
+      const tCenter = t + tSpan / 2;
 
-    for (let i = 0; i < strokeCount; i++) {
-      const tCenter = (i + 0.5) / strokeCount;
-      const basePos: [number, number, number] = [
-        sample.parentPosition[0] + boneVec[0] * tCenter,
-        sample.parentPosition[1] + boneVec[1] * tCenter,
-        sample.parentPosition[2] + boneVec[2] * tCenter,
+      const centerPos: [number, number, number] = [
+        parentPos[0] + boneVec[0] * tCenter,
+        parentPos[1] + boneVec[1] * tCenter,
+        parentPos[2] + boneVec[2] * tCenter,
       ];
-
-      const identity = sample.boneIndex * 131 + i * 7 + 0.5;
-      const pressure = 1 + style.pressureVariance * (hash(identity) * 2 - 1);
-
       // The paint doesn't just point differently under force — it lands further along where
       // the limb is headed, like real pressure smearing it forward.
-      const push = forceBlend * boneLen * 0.3;
+      const push = speed * style.forceScale;
       const position: [number, number, number] = [
-        basePos[0] + velDir[0] * push,
-        basePos[1] + velDir[1] * push,
-        basePos[2] + velDir[2] * push,
+        centerPos[0] + velDir[0] * push,
+        centerPos[1] + velDir[1] * push,
+        centerPos[2] + velDir[2] * push,
       ];
 
-      const length = Math.max(0.15, coverageLength * style.lengthScale * (1 + forceBlend * 0.4));
+      const renderLength = Math.max(
+        0.15,
+        Math.min(style.maxStrokeLength, baseLength * (1 + speed * style.smearScale)) * style.lengthScale
+      );
+      const pressure = 1 + style.pressureVariance * (paintLoad * 2 - 1);
 
       strokes.push({
         position,
-        velocity: paintDir,
-        length,
-        width: sample.thickness * style.widthScale * pressure,
+        velocity: velDir,
+        length: renderLength,
+        width: bone.thickness * style.widthScale * pressure,
         volume: (0.15 + speed * style.volumeScale) * pressure,
         color: style.color,
         seed: identity * 0.6180339887,
       });
+
+      t += tSpan;
+      slot++;
     }
-  }
+  });
 
   return strokes;
 }

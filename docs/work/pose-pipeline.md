@@ -130,3 +130,59 @@ path — and the real dance scene, both at a static frame and mid-motion via scr
 now reads immediately as a stick-figure-like arrangement of directed limb strokes rather than
 speckled dots, with visible pressure variation stroke to stroke and visible direction bias on
 fast-moving limbs (mid-swing frames show strokes clearly skewed off their resting bone angle).
+
+### Round 3: correction — orientation should be per-dab instantaneous velocity, not one averaged bone direction
+
+User correction after Round 2: "instantaneous velocity" was the intended orientation driver
+all along — Round 2 misread the brief as "align to the bone's static geometry, let motion only
+bend it," when the actual ask was "align to this specific bone's own motion, not some
+aggregate for the whole skeleton or scene." The mistake was literal: `generateBoneSamples`
+averaged the parent and child joints' velocities into **one** value for the entire bone and
+reused it for every stroke placed on that bone — collapsing exactly the per-point variation
+that made a rotating limb's tip move differently than its base. Combined with the
+`round(boneLength / targetStrokeLength)` sizing (Round 2), which drove almost every bone to
+resolve to exactly one stroke, the result was correctly described as "too straight and
+singular": one long, uniformly-angled stroke per limb. Also asked for: a hard max stroke
+length, and longer bones covered by *multiple* strokes, with each stroke's length driven by
+"how much paint the brush picked up" — explicitly **not** one stroke per bone.
+
+Reworked in `emitters.ts` and `strokes.ts`:
+
+- **`generateBoneSamples` removed.** `sampleBoneAtT(cache, bone, dancerIndex, frame, t)`
+  (emitters.ts) is the shared primitive instead — one point's position + true central-
+  difference velocity, queried fresh at whatever `t` is needed. `generateEmitters` (fixed
+  sample count, feeds speckles) now just calls this in a loop; it used to inline the same
+  math directly.
+- **`generateBoneStrokes` walks each bone laying down "paint dabs.`** Starting at `t = 0`
+  (parent), each iteration: sample `sampleBoneAtT` at the *current* `t` (this dab's own
+  instantaneous velocity — not the bone's, not an average), draw a per-dab `paintLoad` in
+  `[0, 1)` (deterministic per `(boneIndex, dabSlot)`, not time — same reasoning as pressure in
+  Round 2), and set this dab's coverage length to
+  `minStrokeLength + paintLoad * (maxStrokeLength - minStrokeLength)` — "how much paint it
+  picked up" directly decides "how far it can carry," per the brief, both capped by the new
+  hard `maxStrokeLength`. Advance `t` by that dab's coverage fraction and repeat until the
+  bone is covered. A long bone (thigh/shin, ~7.3 units, `maxStrokeLength` 3.2) now resolves to
+  ~3-4 dabs; short bones (hands, feet, fingers) still resolve to one, since one dab's minimum
+  reach already covers them.
+- **Orientation is the dab's own instantaneous velocity direction, full stop** (falling back
+  to the bone's static direction only when that point is essentially motionless, where a
+  velocity direction is undefined/meaningless) — no blend toward bone-geometry capped at some
+  fraction, which was the actual bug Round 2 introduced.
+- **`paintLoad` also drives pressure**: width/volume get the same `1 + pressureVariance *
+  (paintLoad*2-1)` multiplier as before, but now derived from the same random draw as length
+  rather than a separate one — physically, more paint on the brush means it goes further *and*
+  lays down more material, not two independent coincidences.
+- Speed still stretches a dab's *rendered* length a bit further (`smearScale`, still
+  hard-capped at `maxStrokeLength`) and pushes its position along the velocity direction
+  (`forceScale`) — the "afflicted by velocity pressure" effect survives Round 2, just now
+  applied per-dab instead of per-bone-average.
+- `widthScale` brought back down 1.5 → 1.2: with several overlapping dabs per long bone again
+  contributing to a limb's visual thickness (closer to the original per-point-sampling
+  system's approach than Round 2's single carry-it-all stroke), less per-stroke width is
+  needed to read as full.
+
+Verified visually on the real dance scene (static frame and mid-motion): long bones now
+visibly resolve into several shorter, independently-angled dabs rather than one straight
+line — legs and arms both show a rougher, more painterly buildup instead of a geometric
+stick-figure look, and mid-motion frames show clear per-dab direction variation (dabs along
+the same limb pointing in visibly different directions) rather than one uniform lean.
