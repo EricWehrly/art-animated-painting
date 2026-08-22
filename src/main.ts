@@ -99,6 +99,10 @@ async function main() {
       maxStrokeLength: 3.2,
       minStrokeLength: 1.0,
       forceScale: 3.0,
+      // Calibrated so a "fast" limb (across-bone speed ~0.45, roughly the speckle-fling
+      // threshold's neighborhood) sits near the maxWaverBlend cap rather than far under it.
+      waverScale: 1.2,
+      maxWaverBlend: 0.55,
       smearScale: 1.5,
     };
   }

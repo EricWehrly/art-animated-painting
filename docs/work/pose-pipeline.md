@@ -186,3 +186,37 @@ visibly resolve into several shorter, independently-angled dabs rather than one 
 line — legs and arms both show a rougher, more painterly buildup instead of a geometric
 stick-figure look, and mid-motion frames show clear per-dab direction variation (dabs along
 the same limb pointing in visibly different directions) rather than one uniform lean.
+
+### Round 4: a rotating limb's velocity points ACROSS itself, not along it
+
+User feedback with an annotated screenshot: a leg was rendering as a stack of short dashes
+running roughly *perpendicular* to the leg — a "ladder" — instead of strokes running along
+its length. Their reference sketch showed a single flowing, gently wavering line traveling
+along the limb, and they marked the ladder rungs directly on the render for comparison.
+
+The cause is physical, not a tuning miss: Round 3's orientation was "the dab's own
+instantaneous velocity, full stop." For a bone that's part of a rotating rigid chain — which
+is what nearly all skeletal motion is, joints being rotational — a point's velocity is
+roughly *perpendicular* to the radius from its pivot. A bone segment more or less *is* that
+radius. So a swinging limb's velocity points mostly **across** the bone, not along it, and
+orienting strokes straight at that instantaneous velocity was always going to draw crosswise
+dashes on any bone with real angular speed — exactly the ladder in the screenshot. This
+wasn't visible on a still pose (near-zero velocity falls back to the bone's own direction,
+which looks right) — only on limbs that were actually moving, which is most of them on a
+salsa dancer.
+
+Fix, in `strokes.ts` (same walk, same per-dab-not-averaged velocity — that part of Round 3
+was correct and stays): decompose each dab's local velocity relative to the bone's own axis.
+The along-bone component is irrelevant to orientation (it's already the walk's own travel
+direction, parent→child). The across-bone component is what should visibly bend the
+stroke — but layered onto the bone axis and capped (`maxWaverBlend`, default 0.55 — up to
+roughly a 45-60° lean, never a full flip to perpendicular), not substituted for it outright.
+Position also gets pushed sideways by the same across-bone velocity (`forceScale`), so a
+swinging limb's dabs visibly drift off the bone's resting line as a group, not just lean
+individually — together these two effects are what produce the flowing, wavering line the
+reference sketch showed, rather than either a dead-straight stick (Round 2's bug) or a
+perpendicular ladder (Round 3's bug).
+
+Verified visually: a still leg (frame 0) now renders as clean diagonal strokes running along
+its own length, no ladder rungs. A leg mid-step (scrubbed to a fast frame) shows a gentle
+wavering S-curve along its length instead of either a straight line or crosswise dashes.

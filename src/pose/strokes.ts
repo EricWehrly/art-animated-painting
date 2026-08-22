@@ -38,11 +38,18 @@ export interface BoneStrokeStyle {
   /** Shortest a dab can be, even at minimum paint pickup — keeps low-paintLoad strokes from
    * collapsing to invisible specks. */
   minStrokeLength: number;
-  /** How much local instantaneous speed further stretches a dab beyond its paint-load base
-   * length (still hard-capped at maxStrokeLength) and pushes its position along that
-   * velocity — the "force"/pressure the brief asked for: a fast-moving section smears
-   * further and lands ahead of where the limb currently is. */
+  /** How much a dab's own sideways (across-the-bone) instantaneous velocity pushes its
+   * position and bends its direction away from the bone's own axis — see the comment on
+   * generateBoneStrokes for why it's the sideways component specifically, not full velocity. */
   forceScale: number;
+  /** Caps how far a dab's orientation can bend away from the bone axis toward the sideways
+   * velocity direction (0 = never bends, stays exactly bone-aligned; ~0.5-0.6 = a visible
+   * flowing waver without ever flipping to point across the limb). */
+  maxWaverBlend: number;
+  waverScale: number;
+  /** How much local (total) instantaneous speed further stretches a dab's rendered length
+   * beyond its paint-load base (still hard-capped at maxStrokeLength) — a fast-moving
+   * section smears further, like real pressure dragging the paint out. */
   smearScale: number;
 }
 
@@ -60,13 +67,23 @@ const MAX_DABS_PER_BONE_SAFETY = 20; // guards against a runaway loop on degener
  * Walks each bone from parent to child laying down dabs of paint, "connect the dots" style —
  * each dab's length is however far its randomly-varying paint load can carry (capped at
  * maxStrokeLength), so a long bone naturally needs several dabs to cover while a short one
- * needs only one. Each dab samples its OWN instantaneous velocity fresh at its own position
- * along the bone (see emitters.ts sampleBoneAtT) — deliberately per-dab, not one velocity
- * averaged across the whole bone and reused for every stroke on it (that was tried and
- * produced strokes that all pointed identically regardless of where they sat — see
- * docs/work/pose-pipeline.md Round 3). Orientation IS that instantaneous velocity, falling
- * back to the bone's own static direction only when a point is essentially still (velocity
- * direction is meaningless at zero speed). See docs/work/pose-pipeline.md "Strokes".
+ * needs only one.
+ *
+ * Orientation is the bone's own axis, waved by that dab's own instantaneous SIDEWAYS
+ * velocity — sampled fresh at each dab's own position along the bone (see emitters.ts
+ * sampleBoneAtT), deliberately per-dab, not one velocity averaged across the whole bone (see
+ * docs/work/pose-pipeline.md Round 3). Using the FULL instantaneous velocity as the
+ * orientation outright (tried in Round 3) was wrong for a different reason: a point on a
+ * rotating rigid body moves roughly perpendicular to the radius from its pivot, and a bone
+ * IS that radius — so a swinging limb's velocity points mostly ACROSS the bone, not along
+ * it. Painting strokes pointed straight at their own instantaneous velocity therefore drew a
+ * "ladder" of crosswise dashes stacked up the limb instead of strokes running along it. The
+ * fix: decompose velocity relative to the bone's own axis. The along-bone component barely
+ * matters for direction (it's already the walk's own travel direction). The across-bone
+ * component is what should visibly bend the stroke — layered onto the bone axis and capped
+ * at maxWaverBlend, not substituted for it — producing a flowing, slightly wavering line
+ * along the limb rather than either a dead-straight stick or a perpendicular ladder. See
+ * docs/work/pose-pipeline.md "Strokes".
  *
  * Needs cache/frame access to sample arbitrary points adaptively as the walk proceeds, so
  * (unlike the rest of this module) it isn't a pure data transform over pre-computed samples.
@@ -99,8 +116,32 @@ export function generateBoneStrokes(
     while (t < 0.999 && slot < MAX_DABS_PER_BONE_SAFETY) {
       const { velocity } = sampleBoneAtT(cache, bone, dancerIndex, frame, t);
       const speed = Math.hypot(velocity[0], velocity[1], velocity[2]);
-      const velDir: [number, number, number] =
-        speed > 1e-4 ? [velocity[0] / speed, velocity[1] / speed, velocity[2] / speed] : boneDir;
+
+      // Split velocity into "along the bone" (irrelevant to direction — that's already the
+      // walk's own travel axis) and "across the bone" (a rotating limb's actual visible
+      // motion relative to its own shape — this is what should wave the stroke).
+      const velAlong = velocity[0] * boneDir[0] + velocity[1] * boneDir[1] + velocity[2] * boneDir[2];
+      const velAcross: [number, number, number] = [
+        velocity[0] - velAlong * boneDir[0],
+        velocity[1] - velAlong * boneDir[1],
+        velocity[2] - velAlong * boneDir[2],
+      ];
+      const acrossSpeed = Math.hypot(velAcross[0], velAcross[1], velAcross[2]);
+      const acrossDir: [number, number, number] =
+        acrossSpeed > 1e-4 ? [velAcross[0] / acrossSpeed, velAcross[1] / acrossSpeed, velAcross[2] / acrossSpeed] : boneDir;
+
+      const waverBlend = Math.min(acrossSpeed * style.waverScale, style.maxWaverBlend);
+      const paintDirRaw: [number, number, number] = [
+        boneDir[0] * (1 - waverBlend) + acrossDir[0] * waverBlend,
+        boneDir[1] * (1 - waverBlend) + acrossDir[1] * waverBlend,
+        boneDir[2] * (1 - waverBlend) + acrossDir[2] * waverBlend,
+      ];
+      const paintDirLen = Math.hypot(paintDirRaw[0], paintDirRaw[1], paintDirRaw[2]) || 1;
+      const paintDir: [number, number, number] = [
+        paintDirRaw[0] / paintDirLen,
+        paintDirRaw[1] / paintDirLen,
+        paintDirRaw[2] / paintDirLen,
+      ];
 
       const identity = boneIndex * 131 + slot * 7 + 0.5;
       // How much paint this dab picked up, 0..1 — drives both how far it can carry (length)
@@ -121,13 +162,14 @@ export function generateBoneStrokes(
         parentPos[1] + boneVec[1] * tCenter,
         parentPos[2] + boneVec[2] * tCenter,
       ];
-      // The paint doesn't just point differently under force — it lands further along where
-      // the limb is headed, like real pressure smearing it forward.
-      const push = speed * style.forceScale;
+      // Position gets pushed sideways too, not just the direction bent — a limb swinging
+      // through the air should read as paint visibly drifting off its resting line, not just
+      // strokes that lean while staying perfectly centered on it.
+      const push = acrossSpeed * style.forceScale;
       const position: [number, number, number] = [
-        centerPos[0] + velDir[0] * push,
-        centerPos[1] + velDir[1] * push,
-        centerPos[2] + velDir[2] * push,
+        centerPos[0] + acrossDir[0] * push,
+        centerPos[1] + acrossDir[1] * push,
+        centerPos[2] + acrossDir[2] * push,
       ];
 
       const renderLength = Math.max(
@@ -138,7 +180,7 @@ export function generateBoneStrokes(
 
       strokes.push({
         position,
-        velocity: velDir,
+        velocity: paintDir,
         length: renderLength,
         width: bone.thickness * style.widthScale * pressure,
         volume: (0.15 + speed * style.volumeScale) * pressure,
