@@ -745,3 +745,72 @@ with no console errors.
 `dryWidthFactor`/`dryVolumeFactor`) are first-pass numbers, not a claimed final answer — the
 user's own language ("it still needs a big pull to get where I'm thinking") suggests this is
 an iteration, not the destination.
+
+### Round 15: motion was changing the rules, not accentuating them — one variable had two jobs
+
+User's framing this round: screenshots of frame 51 showed one dancer's leg painted as a huge,
+barely-recognizable mass while the other read as a clean figure, and the debug overlay made the
+cause visible — strokes on the fast leg were rendered far longer AND positioned way off from
+the true bone line the outline draws (user hand-annotated a screenshot: a thin red line for
+where a stroke's core should sit, a pink oval for the region around it, pink arrows for the
+motion direction those strokes should still angle along). Direct quote: "the change in force...
+has a HUGE proportional difference in how large the leg is drawn. This is more than just
+accentuating shape using motion, it's a total change in rules." The ask: strokes under motion
+should get longer at a "reasonable proportion," look "hastier" (more likely to throw
+speckles), have their force "accentuated, slightly" and be "dragged out a little" — modest,
+capped effects — while staying close to the true region; only their ANGLE should track motion
+strongly, the way the pink arrows indicated. Separately: speckles "just look like scattering
+and noise" and need to read as "a high-intensity fling of paint" instead.
+
+**Root cause: one `length` value did two unrelated jobs.** `generateChainMarks` used the same
+motion-smeared `length` both to advance the lane's walked position (`passPos += heading *
+length`) and as the rendered mark's visual length. A fast, heavily-smeared step didn't just
+draw a longer streak — it physically relocated the anchor that far, every step, in roughly the
+same direction for as long as the motion lasted. `containmentPull`'s soft correction (Round 14)
+was pulling back toward the ideal track each step, but a sustained, large, directionally-
+consistent displacement every single step outpaces a single soft correction faster than it can
+catch up — that's the "total change in rules" the user was seeing: under sustained motion the
+walk stopped being "the calm pass, nudged," and became a different, much less contained
+process entirely.
+
+**The fix: split `walkLength` (how far the hand actually moves) from `renderLength` (how long
+the visible mark looks).** `walkLength` is the base per-step length — pressure/lengthScale
+jittered, but NOT motion-smeared — and is what `passPos` advances by and what
+`containmentPull` corrects. `renderLength` is `walkLength` stretched by a smear bonus capped at
++80% (`Math.min(speed * smearScale, 0.8)`), used only for the Stroke's own rendered length, the
+debug overlay's start/end, and the speckle emitter's tip position. The anchor's own placement is
+now governed by the same calm, tightly-contained walk regardless of speed; only the mark drawn
+FROM that anchor stretches out and only up to a fixed, modest ceiling — "accentuated...
+slightly," not unbounded. Width picked up the same capped bonus at a smaller weight (`* (1 +
+smearBonus * 0.3)`) so a forceful stroke reads as a little bolder too, not just longer.
+
+**Speckles made anisotropic and speed-scaled.** `generateSpeckles` previously jittered a
+droplet's position independently on all three axes by a FIXED radius regardless of how fast the
+emitter was moving — a droplet barely above the speed threshold got the same scatter magnitude
+as a genuinely violent one, which is what read as ambient noise rather than a directed fling.
+Now jitter is decomposed into two axes strictly perpendicular to the fling direction (via a
+`cross()`-built basis, mirroring the perpendicular-axis trick `generateChainMarks` already uses
+for lane offsets) and scaled by `speedRatio`, so a gentle fling stays a tight, small spray and a
+violent one throws visibly further-scattered droplets. Droplet length also stretches with
+`speedRatio` (up to +160%) and width narrows slightly at high speed, so a high-intensity fling
+reads as a few bigger, more visibly stretched streaks rather than a cloud of uniform dots — same
+"accentuated, dragged out" shape as the main strokes above. `speckleStyleFor`'s emitter-tip
+source (already fixed last round) combines with this to make speckles feel like the actual
+breaking point of a stroke's fling, not a decoration near it.
+
+Verified: re-rendered frame 51 (the exact case flagged) — both dancers now read as recognizable,
+proportionate limbs; the previously-massive leg is visibly smaller and no longer dominates the
+frame. Debug overlay on the same frame confirms strokes now sit close against the white outline
+while still visibly angled along the cyan motion arrows — direction follows motion strongly,
+position doesn't run away, matching the user's red-line/pink-area/pink-arrow annotation
+directly. Speckles at frame 51 (duress on, dancer 1 solo) now read as short, outward-radiating
+streaks trailing off the moving limb's edge rather than a diffuse dot cloud. swatch.html and
+compare.html both still load with no console errors.
+
+Not addressed this round (left for a future pass if it comes up again): the "park the current
+approach as one brush mentality, and try [something else]" framing at the top of the user's
+message — read in context, the concrete asks that followed (reasonable proportion, hastier,
+accentuated force, contained position, better speckles) were all served by tightening the
+EXISTING model rather than by building a second, alternate one, so no second mode was built.
+If motion still needs a genuinely different regime once the tightened version is judged, that's
+the next thing to reopen.

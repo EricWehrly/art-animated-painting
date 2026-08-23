@@ -73,10 +73,11 @@ export interface BoneStrokeStyle {
    * choice, not a stability requirement (each step is independent, so there's no convergence
    * risk to guard against — see Round 13's doc comment on the old seeking-brush maxWaverBlend). */
   maxMotionForce: number;
-  /** How much local speed stretches a step's length beyond its base (still clamped to
-   * maxMarkLength) — paint thrown by a fast-moving limb streaks past the bone, the visible
-   * wake of the motion, and drains the current paint load faster too (length feeds paint
-   * consumption below) — a hard-flung stroke runs a brush dry quicker than a gentle one. */
+  /** How much local speed stretches a step's RENDERED length beyond its base, capped at +80%
+   * (see generateChainMarks' smearBonus) — deliberately does NOT affect how far the brush's
+   * own hand-position actually walks (see walkLength) — see docs/work/pose-pipeline.md
+   * Round 15: conflating those two was what let a fast step both draw a longer streak AND
+   * physically relocate far from the target region, rather than "accentuating... slightly." */
   smearScale: number;
   maxMarkLength: number;
 
@@ -289,10 +290,20 @@ export function generateChainMarks(
           ]);
 
           const lengthJitter = 0.8 + hash(stepId + 0.67) * 0.4;
-          const length = Math.max(
-            style.stepLength * 0.4,
-            Math.min(style.maxMarkLength, style.stepLength * lengthJitter * style.lengthScale * (1 + speed * style.smearScale))
-          );
+          // walkLength (how far the brush's own hand actually travels this step) is
+          // deliberately NOT motion-smeared — only renderLength (the visible mark) is. Using
+          // one smeared value for both was Round 14's real bug: a fast step didn't just draw a
+          // longer streak, it physically relocated the anchor that much further before
+          // containmentPull could correct it, and since sustained motion keeps doing this
+          // every step in roughly the same direction, the correction never catches up — "the
+          // strokes are... WAY displaced from where the debug indicates we should want them to
+          // be," not just accentuated. See docs/work/pose-pipeline.md Round 15.
+          const walkLength = Math.max(style.stepLength * 0.4, style.stepLength * lengthJitter * style.lengthScale);
+          // Motion still visibly drags the MARK out — "we do want them longer (at a reasonable
+          // proportion)... dragged out a little" — capped well short of maxMarkLength so that
+          // stays a hard safety ceiling, not the normal operating point.
+          const smearBonus = Math.min(speed * style.smearScale, 0.8);
+          const renderLength = Math.min(style.maxMarkLength, walkLength * (1 + smearBonus));
 
           // Walk the lane's own actual position under the wobbling heading — this, not just
           // tilting an independently-placed mark, is what makes the shakiness visible: the
@@ -302,9 +313,9 @@ export function generateChainMarks(
           // positive/negative-space framing this round asked for "not strictly confined... but
           // touch as little negative space as possible."
           const walked: [number, number, number] = [
-            passPos[0] + heading[0] * length,
-            passPos[1] + heading[1] * length,
-            passPos[2] + heading[2] * length,
+            passPos[0] + heading[0] * walkLength,
+            passPos[1] + heading[1] * walkLength,
+            passPos[2] + heading[2] * walkLength,
           ];
           const containmentPull = 0.6;
           const anchor: [number, number, number] = [
@@ -322,14 +333,24 @@ export function generateChainMarks(
           const dryVolumeMul = style.dryVolumeFactor + (1 - style.dryVolumeFactor) * loadFrac;
           const pressureNoise = 1 + style.pressureVariance * 0.5 * (hash(stepId + 0.87) * 2 - 1);
 
-          const width = laneWidthRendered * dryWidthMul * pressureNoise;
+          // A forceful step reads as slightly bolder too, not just longer — reuses the same
+          // capped smearBonus so this can't run away any more than the length can.
+          const width = laneWidthRendered * dryWidthMul * pressureNoise * (1 + smearBonus * 0.3);
           const volume = (0.15 + speed * style.volumeScale) * dryVolumeMul * pressureNoise;
 
           if (debugOut) {
             debugOut.push({
               chainIndex,
-              start: [anchor[0] - heading[0] * length * 0.5, anchor[1] - heading[1] * length * 0.5, anchor[2] - heading[2] * length * 0.5],
-              end: [anchor[0] + heading[0] * length * 0.5, anchor[1] + heading[1] * length * 0.5, anchor[2] + heading[2] * length * 0.5],
+              start: [
+                anchor[0] - heading[0] * renderLength * 0.5,
+                anchor[1] - heading[1] * renderLength * 0.5,
+                anchor[2] - heading[2] * renderLength * 0.5,
+              ],
+              end: [
+                anchor[0] + heading[0] * renderLength * 0.5,
+                anchor[1] + heading[1] * renderLength * 0.5,
+                anchor[2] + heading[2] * renderLength * 0.5,
+              ],
               rawVelocity: velocity,
             });
           }
@@ -337,7 +358,7 @@ export function generateChainMarks(
           strokes.push({
             position: anchor,
             velocity: heading,
-            length,
+            length: renderLength,
             width,
             volume,
             color: style.color,
@@ -346,14 +367,18 @@ export function generateChainMarks(
 
           if (emittersOut && speed > style.speckleSpeedThreshold) {
             emittersOut.push({
-              position: [anchor[0] + heading[0] * length * 0.5, anchor[1] + heading[1] * length * 0.5, anchor[2] + heading[2] * length * 0.5],
+              position: [
+                anchor[0] + heading[0] * renderLength * 0.5,
+                anchor[1] + heading[1] * renderLength * 0.5,
+                anchor[2] + heading[2] * renderLength * 0.5,
+              ],
               velocity,
               thickness: width,
               t,
             });
           }
 
-          const consumed = length / style.paintCapacity;
+          const consumed = renderLength / style.paintCapacity;
           paintLoad -= consumed;
           if (paintLoad <= style.dryMinLoad) {
             paintLoad = 0.85 + hash(stepId + 1.03) * 0.15;
@@ -385,6 +410,12 @@ export interface SpeckleStyle {
  * a real paint fling, distinct from the main brush-shaped strokes. Reuses the Stroke type and
  * the same stroke-mesh rendering: a speckle is just a small, nearly round stroke, so no new
  * geometry or shader is needed. See docs/work/pose-pipeline.md "Strokes".
+ *
+ * Scatter is deliberately anisotropic — jitter only ACROSS the fling direction (via an
+ * arbitrary perpendicular basis), never along it — and droplet size/elongation scale up with
+ * how fast the emitter was moving. An isotropic jitter cloud reads as generic noise; a tight,
+ * increasingly-stretched spray along one direction reads as an actual fling. See
+ * docs/work/pose-pipeline.md Round 15.
  */
 export function generateSpeckles(emitters: Emitter[], frame: number, style: SpeckleStyle): Stroke[] {
   const speckles: Stroke[] = [];
@@ -398,6 +429,21 @@ export function generateSpeckles(emitters: Emitter[], frame: number, style: Spec
     const dirLen = speed || 1e-6;
     const dir: [number, number, number] = [e.velocity[0] / dirLen, e.velocity[1] / dirLen, e.velocity[2] / dirLen];
 
+    let perpA = cross(dir, [0, 1, 0]);
+    let perpALen = Math.hypot(perpA[0], perpA[1], perpA[2]);
+    if (perpALen < 1e-6) {
+      perpA = cross(dir, [1, 0, 0]);
+      perpALen = Math.hypot(perpA[0], perpA[1], perpA[2]) || 1;
+    }
+    perpA = [perpA[0] / perpALen, perpA[1] / perpALen, perpA[2] / perpALen];
+    const perpB = cross(dir, perpA); // already unit — dir and perpA are orthonormal
+
+    // A gentle fling barely above threshold stays a tight, small spray; a violent one throws
+    // fewer-but-bigger, more visibly stretched droplets further out — "accentuated... dragged
+    // out a little," the same shape the main strokes' render-length change follows above.
+    const elongation = 1 + speedRatio * 1.6;
+    const acrossSpread = style.spread * (0.15 + speedRatio * 0.35);
+
     for (let k = 0; k < count; k++) {
       const seed = frame * 97.13 + i * 13.7 + k * 7.31;
       const r1 = hash(seed);
@@ -405,19 +451,20 @@ export function generateSpeckles(emitters: Emitter[], frame: number, style: Spec
       const r3 = hash(seed + 0.71);
       const r4 = hash(seed + 1.13);
 
-      const flingDist = style.spread * (0.4 + r1 * 1.6) * speedRatio;
-      const jitter = style.spread * 0.5;
+      const flingDist = style.spread * (0.5 + r1 * 1.5) * speedRatio;
+      const acrossA = (r3 - 0.5) * acrossSpread;
+      const acrossB = (r4 - 0.5) * acrossSpread;
 
       speckles.push({
         position: [
-          e.position[0] + dir[0] * flingDist + (r2 - 0.5) * jitter,
-          e.position[1] + dir[1] * flingDist + (r3 - 0.5) * jitter,
-          e.position[2] + dir[2] * flingDist + (r4 - 0.5) * jitter,
+          e.position[0] + dir[0] * flingDist + perpA[0] * acrossA + perpB[0] * acrossB,
+          e.position[1] + dir[1] * flingDist + perpA[1] * acrossA + perpB[1] * acrossB,
+          e.position[2] + dir[2] * flingDist + perpA[2] * acrossA + perpB[2] * acrossB,
         ],
         velocity: e.velocity,
-        length: style.sizeScale * (0.4 + r1 * 0.6),
-        width: style.sizeScale * (0.3 + r2 * 0.5),
-        volume: 0.04 + r1 * 0.06,
+        length: style.sizeScale * (0.5 + r1 * 0.6) * elongation,
+        width: style.sizeScale * (0.3 + r2 * 0.4) * (1 - speedRatio * 0.2),
+        volume: (0.04 + r1 * 0.06) * (1 + speedRatio * 0.6),
         color: style.color,
         seed,
       });
