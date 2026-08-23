@@ -23,15 +23,20 @@ const BASE_STYLE: Omit<BoneStrokeStyle, "color"> = {
   lengthScale: 1,
   volumeScale: 0.35,
   pressureVariance: 0.5,
-  markLength: 2.3,
-  minMarkLength: 0.5,
-  maxMarkLength: 4.5,
-  overlapAlong: 0.55,
+  stepLength: 1.7,
+  stepOverlap: 0.5,
   markWidth: 0.8,
-  angleJitter: 0.4,
+  wobbleAngle: 0.35,
+  wobbleDamping: 0.35,
+  paintCapacity: 4.5,
+  dryMinLoad: 0.15,
+  dryWidthFactor: 0.45,
+  dryVolumeFactor: 0.4,
   motionForceScale: 1.0,
   maxMotionForce: 0.75,
   smearScale: 1.2,
+  maxMarkLength: 4.5,
+  speckleSpeedThreshold: Infinity, // this page doesn't render speckles
 };
 
 interface Variant {

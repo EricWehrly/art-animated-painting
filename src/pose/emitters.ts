@@ -1,6 +1,5 @@
 import type { PoseCache } from "./pose-cache";
 import { jointWorldPosition } from "./pose-cache";
-import type { BoneSegment } from "./skeleton";
 
 export interface Emitter {
   position: [number, number, number];
@@ -19,8 +18,8 @@ export interface Emitter {
  * bones have tiny per-frame deltas, and finite-difference noise on those was showing up as
  * incoherent stroke orientation).
  *
- * Takes raw joint indices rather than a `BoneSegment` so the same helper works for any segment
- * of a chain (see pose/strokes.ts generateChainMarks), not just one bone in isolation.
+ * Takes raw joint indices so the same helper works for any segment of a chain (see
+ * pose/strokes.ts generateChainMarks), not just one bone in isolation.
  *
  * Deliberately a per-point query, not "the bone's velocity" — a rotating limb's tip and base
  * move differently, and averaging them into one value per bone was tried and rejected (see
@@ -66,30 +65,4 @@ export function sampleBoneAtT(
   ];
 
   return { position, velocity };
-}
-
-/**
- * Samples `samplesPerBone` evenly-spaced points along every bone segment for one dancer at
- * one frame. Used for speckle placement (generateSpeckles wants several velocity samples
- * along a rotating limb); main figure coverage samples velocity per-mark instead — see
- * pose/strokes.ts generateChainMarks.
- */
-export function generateEmitters(
-  cache: PoseCache,
-  bones: BoneSegment[],
-  dancerIndex: number,
-  frame: number,
-  samplesPerBone = 4
-): Emitter[] {
-  const emitters: Emitter[] = [];
-
-  for (const bone of bones) {
-    for (let s = 0; s < samplesPerBone; s++) {
-      const t = samplesPerBone === 1 ? 0.5 : s / (samplesPerBone - 1);
-      const { position, velocity } = sampleBoneAtT(cache, bone.parentIndex, bone.childIndex, dancerIndex, frame, t);
-      emitters.push({ position, velocity, thickness: bone.thickness, t });
-    }
-  }
-
-  return emitters;
 }

@@ -5,8 +5,8 @@ import { createTimeline } from "./shell/timeline";
 import { createParamsPanel, loadParamsFromHash, saveParamsToHash, defaultParams, type ToyParams } from "./shell/params";
 import { capturePNG } from "./shell/capture";
 import { loadPoseCache } from "./pose/pose-cache";
-import { boneSegments, buildChains } from "./pose/skeleton";
-import { generateEmitters } from "./pose/emitters";
+import { buildChains } from "./pose/skeleton";
+import type { Emitter } from "./pose/emitters";
 import {
   generateChainMarks,
   generateSpeckles,
@@ -35,25 +35,23 @@ async function main() {
 
   const cache = await loadPoseCache("/data");
   // Main figure strokes cover whole CHAINS (a whole limb, e.g. hip-to-toe or shoulder-to-wrist)
-  // with many independent brush marks tiled along and across the chain's own shape — see
-  // generateChainMarks in pose/strokes.ts and buildChains in pose/skeleton.ts.
-  // `bones` (the old per-bone list) is kept only for speckle placement, which still wants
-  // independent per-bone velocity sampling, not chain-level coverage.
-  const bones = boneSegments(cache.header.joints);
+  // with many brush marks tiled along and across the chain's own shape — see
+  // generateChainMarks in pose/strokes.ts and buildChains in pose/skeleton.ts. Speckle emitters
+  // are sourced from generateChainMarks' own fast steps (see its emittersOut parameter), not
+  // an independent per-bone sampling pass, so a speckle always traces back to an actual
+  // painted stroke's own tip — see docs/work/pose-pipeline.md Round 14.
   const chains = buildChains(cache.header.joints);
   const frameCount = cache.header.frameCount;
   timeline.setFrameCount(frameCount);
 
-  const speckleSamplesPerBone = 3;
   const speckleMaxCount = 6;
-  const speckleEmittersTotal = bones.length * speckleSamplesPerBone * cache.header.dancers.length;
   // Generous headroom, not an exact count — see generateChainMarks' own doc comment for why
-  // its per-chain mark count isn't a simple closed form (it depends on each bone's own length
-  // and width relative to the tuned style's markLength/markWidth). setStrokes() silently caps
-  // at this budget.
+  // its per-chain mark count isn't a simple closed form. setStrokes() silently caps at this
+  // budget. The speckle share now rides on the same per-chain step count (each fast step can
+  // contribute one emitter), rather than an independent bone-based estimate.
   const maxMarksPerChainEstimate = 90;
   const mainMarksTotal = chains.length * maxMarksPerChainEstimate * cache.header.dancers.length;
-  const maxStrokes = mainMarksTotal + speckleEmittersTotal * speckleMaxCount * 2;
+  const maxStrokes = mainMarksTotal + mainMarksTotal * speckleMaxCount;
 
   const strokeMesh = createStrokeMesh(maxStrokes);
   // The camera's viewing angle is a fixed, build-time constant (see shell/canvas.ts) —
@@ -101,9 +99,9 @@ async function main() {
   function strokeStyleFor(dancerIndex: number): BoneStrokeStyle {
     // Calm mode ("duress" off): a single shared color for both dancers, and every
     // motion-driven effect zeroed — pure bone-aligned coverage (still with the always-on
-    // angleJitter/lane structure that makes it read as painted, not a wire), for calibrating
+    // wobble/loading structure that makes it read as painted, not a wire), for calibrating
     // the base figure independent of how motion later bends it. See docs/work/pose-pipeline.md
-    // Round 5, Round 13.
+    // Round 5, Round 13, Round 14.
     const hex = params.duress ? (dancerIndex === 0 ? params.colorA : params.colorB) : params.colorA;
     const c = new THREE.Color(hex);
     return {
@@ -115,25 +113,33 @@ async function main() {
       // Elongated relative to markWidth — a mark needs a real length-to-width ratio to read as
       // a brush gesture; close to 1:1 reads as a stamped coin/ring instead (see
       // docs/work/pose-pipeline.md Round 13's first attempt).
-      markLength: 2.3,
-      minMarkLength: 0.5,
-      maxMarkLength: 4.5,
-      // How much successive along-arc marks overlap — generous enough that any given point is
-      // usually covered by several marks' bodies, not just one mark's fading tip, which is
-      // what keeps a dab's own end-cap taper from reading as a visible groove at its boundary.
-      overlapAlong: 0.55,
+      stepLength: 1.7,
+      stepOverlap: 0.5,
       // A single lane's target width — how many parallel passes a limb's local width needs
       // (round(localWidth / markWidth)) is what makes a hip read as several strokes wide and
       // a forearm as one, instead of every limb being one uniform-width line.
       markWidth: 0.8,
-      // Always on, independent of duress — see BoneStrokeStyle's doc comment. ~23 degrees.
-      angleJitter: 0.4,
+      // Always on, independent of duress — a persistent, damped wander around the bone
+      // tangent, not one-shot per-mark noise. ~20 degrees, damped back toward the tangent by
+      // 35% each step so a pass stays "trying to move in the same general direction."
+      wobbleAngle: 0.35,
+      wobbleDamping: 0.35,
+      // A load covers a little under 3 steps before running dry, so the thick/thin/reload
+      // cycle is visible within most bone segments, not just on the longest ones.
+      paintCapacity: 4.5,
+      dryMinLoad: 0.15,
+      dryWidthFactor: 0.45,
+      dryVolumeFactor: 0.4,
       // Unlike the old seeking-brush's maxWaverBlend, this has no 0.5 stability ceiling (see
       // BoneStrokeStyle doc comment) — these values are an art-direction choice, not a
       // correctness one.
       motionForceScale: params.duress ? 1.0 : 0,
       maxMotionForce: params.duress ? 0.75 : 0,
       smearScale: params.duress ? 1.2 : 0,
+      maxMarkLength: 4.5,
+      // Speckles should read as the breaking point of a stroke's own fling, not a separate
+      // effect — see speckleStyleFor's spread comment.
+      speckleSpeedThreshold: params.duress && params.speckleAmount > 0 ? 0.15 : Infinity,
     };
   }
 
@@ -144,7 +150,10 @@ async function main() {
       color: [c.r, c.g, c.b],
       speedThreshold: 0.15,
       maxCount: speckleMaxCount * params.speckleAmount,
-      spread: 2.5,
+      // Small — emitters now come from generateChainMarks' own fast steps (their actual tip
+      // position), so a big scatter radius here would just recreate the "too far from the
+      // stroke it's meant to be flung from" look. See docs/work/pose-pipeline.md Round 14.
+      spread: 0.7,
       sizeScale: 0.35,
     };
   }
@@ -158,12 +167,15 @@ async function main() {
       // single body hard to read (see the frame-68 case).
       if (params.soloDancer !== -1 && dancerIndex !== params.soloDancer) continue;
       const debugDabs: ChainDebugDab[] | undefined = params.debugMode ? [] : undefined;
-      allStrokes.push(...generateChainMarks(cache, chains, dancerIndex, frame, strokeStyleFor(dancerIndex), viewForward, debugDabs));
-      if (debugDabs) debugDancers.push({ dancerIndex, debugDabs });
       // Speckles are a fling/spatter effect from motion — meaningless (and distracting from
-      // the base figure) in calm calibration mode.
-      if (params.duress && params.speckleAmount > 0) {
-        const emitters = generateEmitters(cache, bones, dancerIndex, frame, speckleSamplesPerBone);
+      // the base figure) in calm calibration mode; strokeStyleFor sets speckleSpeedThreshold
+      // to Infinity in that case so no emitter is ever pushed, rather than gating here too.
+      const emitters: Emitter[] | undefined = params.duress && params.speckleAmount > 0 ? [] : undefined;
+      allStrokes.push(
+        ...generateChainMarks(cache, chains, dancerIndex, frame, strokeStyleFor(dancerIndex), viewForward, debugDabs, emitters)
+      );
+      if (debugDabs) debugDancers.push({ dancerIndex, debugDabs });
+      if (emitters) {
         allStrokes.push(...generateSpeckles(emitters, frame, speckleStyleFor(dancerIndex)));
       }
     }

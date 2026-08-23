@@ -675,3 +675,73 @@ laid out entirely below the viewport (Tweakpane only self-positions when it owns
 floating container; handed `#app` — which the full-height canvas already fills via normal
 document flow — it rendered inline, below the fold). Given its own fixed-position host in
 shell/params.ts, the same way shell/timeline.ts's scrub bar already had one.
+
+### Round 14: independent marks still read as "homogenous, mono-directional lines" — loading,
+depletion, and a shaky walked path, with speckles moved onto the strokes' own tips
+
+User's framing, alongside a real-paint description of how a stroke actually gets applied: dab
+the brush in the paint tray, then stroke the canvas with "gentle strokes with a shaky and
+uneven attempt at even pressure, trying to move in the same general direction... going back and
+dabbing the paint again once the brush begins to run dry, which we should see." Then: "we're
+going to add the impulse of motion on top of that." Named the actual complaint with Round 13's
+result directly: "very homogenous, mono-directional lines filling in an intended shape." Framed
+the target region itself as **positive space** (the bones' shape) versus **negative space**
+(everywhere else) — strokes should mostly fill the former and avoid the latter, "not that I
+want him strictly confined to a space, just..." Separately: speckles have "always" read as too
+far from the stroke that threw them — "like some accentuation marking particularly high
+velocity... rather than looking like the breaking point of the brush's fervor."
+
+**Root cause of the homogeneity:** every mark in Round 13 was placed independently — its own
+one-shot random heading jitter, its own one-shot random paint-load draw, uncorrelated with its
+neighbors. Independent random draws average out to looking uniform in aggregate; nothing about
+the model gave one lane's strokes a *shared, evolving story* the way a real physical brush pass
+has one.
+
+**The fix: a lane became a simulated brush pass, not a set of independent marks.**
+`generateChainMarks` still tiles each chain's target region with parallel lanes across its
+width (unchanged from Round 13), but within a lane, state now persists step to step:
+
+- **Paint load.** A lane starts each bone segment with a fresh, near-full load. Each step
+  consumes some of it (proportional to that step's own length — a longer or motion-stretched
+  step drains faster); a step's WIDTH and VOLUME scale down as the load runs low
+  (`dryWidthFactor`/`dryVolumeFactor`), and once the load drops below `dryMinLoad` the very
+  next step resets to a fresh load. This is the visible thick → thin → thick(reload) cycle
+  down each lane the user asked to actually see, not just imply.
+- **A walked, wobbling path, not a stationary jittered heading.** A persistent, damped random
+  walk (`wobbleAngle`/`wobbleDamping`) rotates the heading around the bone tangent each step —
+  damping pulls it back toward the tangent, so a pass keeps "trying to move in the same general
+  direction" instead of spinning freely. Critically, this heading now also **advances the
+  brush's own position** step to step (`passPos`), softly corrected back toward the lane's
+  geometrically-ideal track each step (`containmentPull`) rather than snapping to it — this is
+  the positive/negative-space framing directly: a pass can wander, but it's pulled back toward
+  the region it's meant to fill, not confined to it outright. (First attempt at this used a
+  weak correction and a large initial wobble kick, which let the very first step of a lane
+  drift far enough from its true joint to leave a visible gap at torso/leg boundaries —
+  fixed by shrinking the initial kick and strengthening the correction.)
+- **Motion layers on top, exactly as asked.** The heading is computed from wobble+walk FIRST,
+  then blended toward the locally-sampled instantaneous velocity direction by
+  `motionForceScale`/`maxMotionForce` (unchanged mechanism from Round 13) — motion is an
+  addition to the base stroking behavior, not a replacement for it.
+
+**Speckles now come from the strokes themselves.** `generateChainMarks` gained an optional
+`emittersOut` parameter: any step whose sampled speed exceeds `speckleSpeedThreshold` pushes an
+`Emitter` at its own forward tip — the actual painted mark that's moving fastest, not an
+independent bone-sampling pass. This replaced `generateEmitters`/`boneSegments` entirely (both
+deleted as dead code — nothing else referenced them once main.ts stopped calling them), and
+`speckleStyleFor`'s `spread` dropped from 2.5 to 0.7: a small scatter radius reads as flung
+*from* the stroke tip it's tied to; a large one was what recreated the "too far from whatever
+stroke it's meant to be flung from" complaint even with the right origin.
+
+Verified: solo dancer at rest shows visible width variation down each limb (a genuine thick/
+thin/reload cycle, not uniform strokes) and real path waviness, with no gap at the hip/thigh
+joint after the initial-kick/containment fix. Frame 68 (duress on) shows speckles clustered
+tightly around the fastest-moving strokes' own tips — most visibly the outstretched arm, where
+a trail of tiny droplets sits right at the fingertip stroke's end, not floating separately near
+it. swatch.html and compare.html (BASE_STYLE/variants updated to the new field names) both load
+with no console errors.
+
+**Left for the user to react to, not resolved unilaterally:** `wobbleAngle`, `wobbleDamping`,
+`containmentPull`, and the paint-load timing constants (`paintCapacity`, `dryMinLoad`,
+`dryWidthFactor`/`dryVolumeFactor`) are first-pass numbers, not a claimed final answer — the
+user's own language ("it still needs a big pull to get where I'm thinking") suggests this is
+an iteration, not the destination.

@@ -27,55 +27,70 @@ export interface BoneStrokeStyle {
   widthScale: number;
   lengthScale: number;
   volumeScale: number;
-  /** How much width/volume vary with how much paint a given mark "picked up" (0 = no
-   * variation, every mark is identical; 1 = full range). Paint load is deterministic per
-   * (chain, segment, along-slot, lane) — not per-frame — so it doesn't flicker as the pose
-   * animates. */
+  /** Extra multiplicative width/volume shake per step, layered on top of the paint-load
+   * depletion below — "uneven pressure," not just "less paint." */
   pressureVariance: number;
-  /** Base world-space length of a single gestural mark, before pressure/motion scaling. */
-  markLength: number;
-  /** Hard clamps on the final (pressure- and motion-scaled) mark length. */
-  minMarkLength: number;
-  maxMarkLength: number;
-  /** Fraction of markLength successive along-arc marks overlap by — 0 = edge to edge, higher
-   * = denser coverage. Needs enough overlap that the target region has no gaps once each
-   * mark's own soft width/cap taper (see stroke-mesh.ts dabShapeGLSL) eats into its nominal
-   * footprint. */
-  overlapAlong: number;
+
+  /** World-space length of one placed dab within a brush pass, before motion stretch. Kept
+   * elongated relative to markWidth — a near-square dab reads as a stamped coin/ring, not a
+   * gesture (see docs/work/pose-pipeline.md Round 13's first attempt). */
+  stepLength: number;
+  /** Fraction consecutive steps within a pass overlap by. */
+  stepOverlap: number;
   /** Desired world-space width of a single lane/pass. How many parallel passes a limb's local
    * width needs is round(localWidth / markWidth) — a thick limb (hip, thigh) gets several
-   * side-by-side marks, a thin one (forearm) gets one. This is what makes an at-rest limb read
-   * as a filled painted shape instead of a thin traced wire. */
+   * side-by-side passes, a thin one (forearm) gets one. */
   markWidth: number;
-  /** Always-on small heading deviation (radians) from the bone tangent, present even with no
-   * motion at all — a real brush stroke isn't perfectly axial even when a hand is deliberately
-   * tracing a line. This, not motion, is what gives the at-rest figure a painted rather than
-   * an extruded look. */
-  angleJitter: number;
-  /** How strongly a mark's heading is pulled from the bone tangent toward the local
-   * instantaneous motion direction, per unit speed — the brush "knows the area it wants to
-   * paint AND the motion applied to it, and paints along the motion into the area it wants to
-   * fill" (see docs/work/pose-pipeline.md Round 13), rather than being required to trace the
-   * bone regardless of motion. */
+
+  /** Max angular deviation (radians) a pass's heading can wander from the bone tangent at any
+   * one step. Drives a persistent, damped random walk carried across a whole pass's steps —
+   * a shaky hand's wander, not independent per-step static — which is what stops the figure
+   * reading as "homogenous, mono-directional lines" (see docs/work/pose-pipeline.md Round 14). */
+  wobbleAngle: number;
+  /** How strongly the wobble is pulled back toward the bone tangent each step, 0..1 — keeps a
+   * pass "trying to move in the same general direction" instead of wandering into negative
+   * space, per the positive/negative-space framing in Round 14. */
+  wobbleDamping: number;
+
+  /** World-length one brush "load" of paint can cover before running dry. */
+  paintCapacity: number;
+  /** Paint-load fraction (0..1, where 1 = a fresh load) below which the brush is considered
+   * dry and the FOLLOWING step reloads to a fresh load — this is the "go back and dab the
+   * paint again" moment, and it needs to be visible, not just implied: see dryWidthFactor/
+   * dryVolumeFactor. */
+  dryMinLoad: number;
+  /** How thin (width) / faint (volume) a fully-dry step renders, relative to a fresh one —
+   * 0 = nearly invisible when dry, 1 = no depletion effect at all. */
+  dryWidthFactor: number;
+  dryVolumeFactor: number;
+
+  /** How strongly a step's heading is pulled from its wobbling base direction toward the local
+   * instantaneous motion direction, per unit speed — layered ON TOP of the base loading/
+   * wobble/depletion behaviour above, not a replacement for it (see Round 14: "then we're
+   * going to add the impulse of motion on top of that"). */
   motionForceScale: number;
-  /** Hard cap on how much of the heading blend motion can take over, 0..1. Unlike the old
-   * seeking-brush's maxWaverBlend, this has no 0.5 stability ceiling: each mark is an
-   * independent short gesture, not one step of a path that has to keep converging on a fixed
-   * target, so there is no runaway-walk risk to guard against — this cap is purely an
-   * art-direction choice (keep the limb legible even at top speed), not a correctness one. */
+  /** Hard cap on how much of the heading blend motion can take over, 0..1 — an art-direction
+   * choice, not a stability requirement (each step is independent, so there's no convergence
+   * risk to guard against — see Round 13's doc comment on the old seeking-brush maxWaverBlend). */
   maxMotionForce: number;
-  /** How much local speed stretches a mark's length beyond its paint-load base (still clamped
-   * to maxMarkLength) — paint thrown by a fast-moving limb streaks further, past where the
-   * bone actually is, like the visible wake of the motion rather than a trace of its position. */
+  /** How much local speed stretches a step's length beyond its base (still clamped to
+   * maxMarkLength) — paint thrown by a fast-moving limb streaks past the bone, the visible
+   * wake of the motion, and drains the current paint load faster too (length feeds paint
+   * consumption below) — a hard-flung stroke runs a brush dry quicker than a gentle one. */
   smearScale: number;
+  maxMarkLength: number;
+
+  /** Per-step speed above which a step also throws a couple of speckles from its own forward
+   * tip — "the breaking point of the brush's fervor," sourced from the actual painted stroke
+   * rather than an independent sampling pass (see docs/work/pose-pipeline.md Round 14). */
+  speckleSpeedThreshold: number;
 }
 
 /** One entry per mark, for the debug overlay's "each stroke we're intending to take" and
  * "direction/strength of motion" views — see generateChainMarks' debugOut parameter. */
 export interface ChainDebugDab {
   chainIndex: number;
-  /** The mark's actual painted extent (its rendered quad's own long axis), not a walked
-   * path segment — there is no walk anymore, each mark is independently placed. */
+  /** The mark's actual painted extent (its rendered quad's own long axis). */
   start: [number, number, number];
   end: [number, number, number];
   /** The raw instantaneous velocity sampled at this mark's anchor, before heading-blending.
@@ -84,8 +99,8 @@ export interface ChainDebugDab {
   rawVelocity: [number, number, number];
 }
 
-/** Deterministic pseudo-random in [0, 1) for a given identity — used for per-mark paint
- * load/pressure/jitter (below) and speckle placement (generateSpeckles). */
+/** Deterministic pseudo-random in [0, 1) for a given identity — used for per-step paint
+ * load/wobble/jitter (below) and speckle placement (generateSpeckles). */
 function hash(n: number): number {
   const s = Math.sin(n) * 43758.5453;
   return s - Math.floor(s);
@@ -102,43 +117,42 @@ function cross(a: [number, number, number], b: [number, number, number]): [numbe
 
 /**
  * Covers each CHAIN (a whole unbranched limb — e.g. hip to toe, or shoulder to wrist; see
- * skeleton.ts buildChains) with independent brush marks, instead of walking it as one
- * continuous traveling brush. The target region to fill is the chain's own literal
- * joint-to-joint shape (a "tube" whose width comes from jointThickness, exactly the "outline"
- * the debug overlay draws) — marks are placed to tile that region along its length AND across
- * its width, so a limb's local width decides how many parallel passes it needs, not just its
- * length how many dabs it needs.
+ * skeleton.ts buildChains) with brush marks, treating the chain's own joint-to-joint shape as
+ * the region to fill — "positive space" the strokes paint into, versus the negative space
+ * around it they should mostly avoid — rather than a bone to trace.
  *
- * Each mark's heading defaults to the bone's own tangent (plus a small always-on angle jitter
- * — see BoneStrokeStyle.angleJitter) and is pulled toward the locally-sampled instantaneous
- * velocity direction by an amount that grows with speed (BoneStrokeStyle.motionForceScale/
- * maxMotionForce). A fast-moving mark also stretches longer (smearScale). This is deliberately
- * NOT the old seeking-brush model (see docs/work/pose-pipeline.md Round 6-12), which walked
- * joint to joint and was constrained to always reach the next joint — "the brush knows both
- * the area it wants to paint, and the motion that will be applied to it, and so paints along
- * the motion into the area it wants to fill," not the other way around (see Round 13). Because
- * marks are independent, there is no convergence requirement, and no "must reach the end of
- * the bone" constraint to satisfy.
+ * Each bone segment is covered by several parallel LANES across its width (thick limbs get
+ * more lanes, thin ones fewer — same coverage idea as Round 13). What's new is what happens
+ * WITHIN a lane: instead of independently-jittered single marks, a lane is a simulated brush
+ * PASS — the brush dabs into the paint tray once (a fresh, full paint load), then strokes
+ * along the bone in a sequence of steps whose heading does a small, damped random walk around
+ * the bone tangent (a shaky hand trying to hold a general direction, not a straight ruled
+ * line, and not independent per-step noise either — the wobble carries over step to step).
+ * Each step consumes some of the current paint load; as the load runs low the step renders
+ * thinner and fainter (dryWidthFactor/dryVolumeFactor), and once it drops below dryMinLoad the
+ * NEXT step reloads back to a fresh load — a visible thick/thin/thick cycle down each lane,
+ * matching a real brush being dipped, dragged until it runs dry, and dipped again.
  *
- * Placement is intentionally irregular — along-slot centers, lane offsets, headings, and
- * lengths all carry independent per-mark jitter — because uniform, identically-spaced,
- * identically-angled marks is exactly what produced the "rings separated by masts" artifact
- * the Round 12 ribbon rewrite was built to eliminate (see docs/work/pose-pipeline.md). That
- * artifact came from mechanical periodicity, not from marks being independent primitives per
- * se — real oil paint IS built from many independent, overlapping, irregular gestures (see the
- * Round 13 reference image), so the fix here is irregularity, not a return to one continuous
- * unbroken mesh (which is why the ribbon mesh from Round 12 is gone: it solved a seam problem
- * this model doesn't have, at the cost of eliminating the very thing — discrete brush marks —
- * that reads as painted).
+ * Motion is layered ON TOP of that base behaviour, not instead of it: a step's heading is
+ * pulled from its wobbling base direction toward the locally-sampled instantaneous velocity
+ * direction by an amount that grows with speed (motionForceScale/maxMotionForce), and a fast
+ * step also stretches longer and drains its paint load faster (smearScale) — paint thrown by
+ * a fast-moving limb streaks past the bone and runs the brush dry sooner, rather than tracing
+ * the limb's position. See docs/work/pose-pipeline.md Round 14.
+ *
+ * This replaces Round 13's independent-single-mark model, which (after fixing an earlier
+ * "rings" regression via elongation/decorrelation) still read as "homogenous, mono-directional
+ * lines" — every mark's own one-shot jitter was independent of its neighbours, so nothing
+ *"flowed." A persistent per-lane wobble plus visible loading/depletion is what turns that into
+ * something that reads as one hand's actual brush passes.
  *
  * `viewForward` is the camera's fixed look direction (see shell/canvas.ts's "fixed camera"
- * decision) — used to derive each along-slot's across-limb (lane) axis as
- * `bone tangent x viewForward`, the same trick stroke-mesh.ts's now-removed ribbon builder
- * used, without needing per-vertex view-space math.
+ * decision) — used to derive each lane's across-limb axis as `bone tangent x viewForward`.
  *
- * Needs cache/frame access to sample the pose and instantaneous velocity at arbitrary points
- * along each bone, so (unlike generateSpeckles) it isn't a pure data transform over
- * pre-computed samples.
+ * `emittersOut`, like `debugOut`, is optional and additive: when passed, every step whose
+ * sampled speed exceeds `style.speckleSpeedThreshold` also pushes an Emitter at its own
+ * forward tip, so speckles (see generateSpeckles below) originate from the actual painted
+ * stroke that's moving fastest, rather than an independent bone-sampling pass — see Round 14.
  */
 export function generateChainMarks(
   cache: PoseCache,
@@ -149,9 +163,11 @@ export function generateChainMarks(
   viewForward: [number, number, number],
   /** Optional — when passed, one entry is pushed per mark as it's computed. Powers the debug
    * overlay (see debug/overlay.ts): the real generator's own data, not a re-derived
-   * approximation, so the overlay can never show something the actual generator didn't do.
-   * undefined in the normal (non-debug) render path costs nothing beyond the one branch. */
-  debugOut?: ChainDebugDab[]
+   * approximation, so the overlay can never show something the actual generator didn't do. */
+  debugOut?: ChainDebugDab[],
+  /** Optional — when passed, fast steps push an emitter at their own tip for generateSpeckles
+   * to consume. See the module doc comment above. */
+  emittersOut?: Emitter[]
 ): Stroke[] {
   const strokes: Stroke[] = [];
 
@@ -193,81 +209,121 @@ export function generateChainMarks(
 
       const width0 = jointThickness[segIndex] * style.widthScale;
       const width1 = jointThickness[segIndex + 1] * style.widthScale;
+      // One lane COUNT per whole segment (from its mid-length width), not re-derived per step
+      // — a lane is a single simulated brush pass with state (paint load, wobble) that
+      // persists down the segment, so the number of lanes can't change partway through it.
+      const numLanes = Math.max(1, Math.round(((width0 + width1) / 2) / style.markWidth));
 
-      const spacing = Math.max(0.15, style.markLength * (1 - style.overlapAlong));
-      // At least 2, even on a short bone (hand, foot): a single along-slot has only one
-      // randomized paint-load length deciding whether it reaches both ends of its segment, and
-      // a short miss there shows up as a visible gap at the joint to the next segment's own
-      // coverage. Two independently-jittered slots make that a rare coincidence instead of a
-      // structural risk.
-      const numAlong = Math.max(2, Math.round(segLen / spacing));
+      const stepSpacing = Math.max(0.12, style.stepLength * (1 - style.stepOverlap));
+      // At least 2 steps even on a short bone (hand, foot) — one step has only one randomized
+      // length deciding whether it bridges to the next segment's own coverage, and a short
+      // miss there is a visible gap at the joint.
+      const numSteps = Math.max(2, Math.round(segLen / stepSpacing));
 
-      for (let a = 0; a < numAlong; a++) {
-        const idBase = chainIndex * 10000 + segIndex * 137 + a * 11;
-        const tBase = (a + 0.5) / numAlong;
-        const tJitter = (hash(idBase) - 0.5) * (1 / numAlong) * 0.7;
-        const t = Math.max(0, Math.min(1, tBase + tJitter));
+      for (let lane = 0; lane < numLanes; lane++) {
+        const laneT = numLanes === 1 ? 0.5 : (lane + 0.5) / numLanes;
+        const laneSeed = chainIndex * 100000 + segIndex * 677 + lane * 131;
 
-        const centerPos: [number, number, number] = [
-          segStart[0] + segVec[0] * t,
-          segStart[1] + segVec[1] * t,
-          segStart[2] + segVec[2] * t,
+        // Persistent per-lane-pass state, carried across this segment's steps: a fresh paint
+        // load (see the module doc comment), a small initial wobble offset, and the brush's
+        // own actual position — which now WALKS under the wobbling heading below rather than
+        // snapping back to a geometrically-ideal point every step. A wobble that only tilted
+        // each independently-placed mark, without letting it actually carry the anchor
+        // sideways, barely read as shakiness — real hand tremor moves where the brush IS, not
+        // just which way it's pointed.
+        let paintLoad = 0.85 + hash(laneSeed + 0.11) * 0.15;
+        // Small initial offset, not a full-magnitude one — the very first step has had no
+        // chance yet to be pulled back by containmentPull below, so starting near the tangent
+        // is what keeps a pass beginning right at its joint instead of visibly missing it.
+        let wobble = (hash(laneSeed + 0.23) - 0.5) * style.wobbleAngle * 0.3;
+        let passPos: [number, number, number] = [
+          segStart[0] + perp[0] * (laneT - 0.5) * width0,
+          segStart[1] + perp[1] * (laneT - 0.5) * width0,
+          segStart[2] + perp[2] * (laneT - 0.5) * width0,
         ];
-        const localWidth = width0 * (1 - t) + width1 * t;
-        const numLanes = Math.max(1, Math.round(localWidth / style.markWidth));
-        // Lanes evenly divide localWidth exactly, so widen each lane's own rendered width a
-        // bit beyond that even division — otherwise adjacent lanes' soft (tear/taper) edges
-        // leave a visible gap between them instead of overlapping like real brush passes do.
-        const laneWidth = (localWidth / numLanes) * 1.4;
 
-        const { velocity } = sampleBoneAtT(cache, parentIndex, childIndex, dancerIndex, frame, t);
-        const speed = Math.hypot(velocity[0], velocity[1], velocity[2]);
-        const velDir = speed > 1e-4 ? normalize(velocity) : segDir;
+        for (let step = 0; step < numSteps; step++) {
+          const stepId = laneSeed * 7 + step * 13;
+          const tBase = (step + 0.5) / numSteps;
+          const tJitter = (hash(stepId) - 0.5) * (1 / numSteps) * 0.5;
+          const t = Math.max(0, Math.min(1, tBase + tJitter));
 
-        for (let lane = 0; lane < numLanes; lane++) {
-          const laneT = numLanes === 1 ? 0.5 : (lane + 0.5) / numLanes;
-          const idLane = idBase * 5 + lane;
-          const laneJitter = (hash(idLane + 0.19) - 0.5) * laneWidth * 0.3;
-          const laneOffset = (laneT - 0.5) * localWidth + laneJitter;
-          // Decorrelates each lane's position ALONG the bone too, not just across it — without
-          // this every lane at a given along-slot sits at the exact same t, so adjacent lanes
-          // line up into a rigid ladder/ring lattice instead of the staggered, crisscrossing
-          // placement real overlapping brush passes have.
-          const alongJitter = (hash(idLane + 0.31) - 0.5) * spacing * 0.8;
+          const localWidth = width0 * (1 - t) + width1 * t;
+          // The lane's IDEAL track — where a perfectly steady hand would be at this point —
+          // used only as a soft correction target below, not as the rendered position itself.
+          const idealPos: [number, number, number] = [
+            segStart[0] + segVec[0] * t + perp[0] * (laneT - 0.5) * localWidth,
+            segStart[1] + segVec[1] * t + perp[1] * (laneT - 0.5) * localWidth,
+            segStart[2] + segVec[2] * t + perp[2] * (laneT - 0.5) * localWidth,
+          ];
+          // Lanes evenly divide localWidth exactly, so widen each lane's own rendered width a
+          // bit beyond that even division — otherwise adjacent lanes' soft (tear/taper) edges
+          // leave a visible gap instead of overlapping like real brush passes do.
+          const laneWidthRendered = (localWidth / numLanes) * 1.6;
 
-          const anchor: [number, number, number] = [
-            centerPos[0] + perp[0] * laneOffset + segDir[0] * alongJitter,
-            centerPos[1] + perp[1] * laneOffset + segDir[1] * alongJitter,
-            centerPos[2] + perp[2] * laneOffset + segDir[2] * alongJitter,
+          // Persistent, damped random walk around the bone tangent — a shaky hand trying to
+          // hold a general direction, not independent per-step noise (see the module doc
+          // comment). Damping pulls it back toward 0 (straight along the tangent) each step,
+          // which is what keeps a pass "trying to move in the same general direction."
+          wobble += (hash(stepId + 0.53) - 0.5) * style.wobbleAngle;
+          wobble *= 1 - style.wobbleDamping;
+          wobble = Math.max(-style.wobbleAngle, Math.min(style.wobbleAngle, wobble));
+          const cosW = Math.cos(wobble);
+          const sinW = Math.sin(wobble);
+          const baseHeading: [number, number, number] = [
+            segDir[0] * cosW + perp[0] * sinW,
+            segDir[1] * cosW + perp[1] * sinW,
+            segDir[2] * cosW + perp[2] * sinW,
           ];
 
-          // Always-on hand-painted deviation from the bone tangent, rotated within the
-          // tangent/perp plane (the plane the fixed camera actually sees) — present regardless
-          // of motion, per BoneStrokeStyle.angleJitter's doc comment.
-          const jitterAngle = (hash(idLane + 0.53) - 0.5) * 2 * style.angleJitter;
-          const cosA = Math.cos(jitterAngle);
-          const sinA = Math.sin(jitterAngle);
-          const jitteredDir: [number, number, number] = [
-            segDir[0] * cosA + perp[0] * sinA,
-            segDir[1] * cosA + perp[1] * sinA,
-            segDir[2] * cosA + perp[2] * sinA,
-          ];
+          const { velocity } = sampleBoneAtT(cache, parentIndex, childIndex, dancerIndex, frame, t);
+          const speed = Math.hypot(velocity[0], velocity[1], velocity[2]);
+          const velDir = speed > 1e-4 ? normalize(velocity) : baseHeading;
 
+          // Motion layered on top of the base wobbling heading, not instead of it.
           const forceBlend = Math.min(speed * style.motionForceScale, style.maxMotionForce);
-          const headingRaw: [number, number, number] = [
-            jitteredDir[0] * (1 - forceBlend) + velDir[0] * forceBlend,
-            jitteredDir[1] * (1 - forceBlend) + velDir[1] * forceBlend,
-            jitteredDir[2] * (1 - forceBlend) + velDir[2] * forceBlend,
-          ];
-          const heading = normalize(headingRaw);
+          const heading = normalize([
+            baseHeading[0] * (1 - forceBlend) + velDir[0] * forceBlend,
+            baseHeading[1] * (1 - forceBlend) + velDir[1] * forceBlend,
+            baseHeading[2] * (1 - forceBlend) + velDir[2] * forceBlend,
+          ]);
 
-          const paintLoad = hash(idLane + 0.87);
-          const pressure = 1 + style.pressureVariance * (paintLoad * 2 - 1);
-          const baseLength = style.markLength * (0.6 + paintLoad * 0.9) * style.lengthScale;
+          const lengthJitter = 0.8 + hash(stepId + 0.67) * 0.4;
           const length = Math.max(
-            style.minMarkLength,
-            Math.min(style.maxMarkLength, baseLength * (1 + speed * style.smearScale))
+            style.stepLength * 0.4,
+            Math.min(style.maxMarkLength, style.stepLength * lengthJitter * style.lengthScale * (1 + speed * style.smearScale))
           );
+
+          // Walk the lane's own actual position under the wobbling heading — this, not just
+          // tilting an independently-placed mark, is what makes the shakiness visible: the
+          // brush's real position drifts, not merely which way each stationary mark points.
+          // Softly corrected back toward the lane's ideal track afterward (containmentPull) so
+          // a run of unlucky wobble draws can't wander the pass out into negative space — the
+          // positive/negative-space framing this round asked for "not strictly confined... but
+          // touch as little negative space as possible."
+          const walked: [number, number, number] = [
+            passPos[0] + heading[0] * length,
+            passPos[1] + heading[1] * length,
+            passPos[2] + heading[2] * length,
+          ];
+          const containmentPull = 0.6;
+          const anchor: [number, number, number] = [
+            walked[0] + (idealPos[0] - walked[0]) * containmentPull,
+            walked[1] + (idealPos[1] - walked[1]) * containmentPull,
+            walked[2] + (idealPos[2] - walked[2]) * containmentPull,
+          ];
+          passPos = anchor;
+
+          // Loading/depletion — how full the brush was AT THE START of this step decides how
+          // richly it paints; the load is then spent (faster for a longer/motion-stretched
+          // step) and, once dry, reloads for the step after this one.
+          const loadFrac = Math.max(0, Math.min(1, paintLoad));
+          const dryWidthMul = style.dryWidthFactor + (1 - style.dryWidthFactor) * loadFrac;
+          const dryVolumeMul = style.dryVolumeFactor + (1 - style.dryVolumeFactor) * loadFrac;
+          const pressureNoise = 1 + style.pressureVariance * 0.5 * (hash(stepId + 0.87) * 2 - 1);
+
+          const width = laneWidthRendered * dryWidthMul * pressureNoise;
+          const volume = (0.15 + speed * style.volumeScale) * dryVolumeMul * pressureNoise;
 
           if (debugOut) {
             debugOut.push({
@@ -282,11 +338,26 @@ export function generateChainMarks(
             position: anchor,
             velocity: heading,
             length,
-            width: laneWidth,
-            volume: (0.15 + speed * style.volumeScale) * pressure,
+            width,
+            volume,
             color: style.color,
-            seed: idLane * 0.6180339887,
+            seed: stepId * 0.6180339887,
           });
+
+          if (emittersOut && speed > style.speckleSpeedThreshold) {
+            emittersOut.push({
+              position: [anchor[0] + heading[0] * length * 0.5, anchor[1] + heading[1] * length * 0.5, anchor[2] + heading[2] * length * 0.5],
+              velocity,
+              thickness: width,
+              t,
+            });
+          }
+
+          const consumed = length / style.paintCapacity;
+          paintLoad -= consumed;
+          if (paintLoad <= style.dryMinLoad) {
+            paintLoad = 0.85 + hash(stepId + 1.03) * 0.15;
+          }
         }
       }
     }
@@ -301,7 +372,10 @@ export interface SpeckleStyle {
   speedThreshold: number;
   /** Speckle count at speedThreshold * 4 (count scales up to this with speed, then holds). */
   maxCount: number;
-  /** World-space radius speckles scatter from the stroke tip, along and across its direction. */
+  /** World-space radius speckles scatter from the stroke tip, along and across its direction —
+   * kept small when emitters come from generateChainMarks (see Round 14): the point is to read
+   * as the breaking point of an actual stroke's own fling, not an independent scatter effect
+   * floating near it. */
   spread: number;
   sizeScale: number;
 }

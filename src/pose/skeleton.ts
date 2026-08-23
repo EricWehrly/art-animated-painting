@@ -1,27 +1,5 @@
 import type { JointMeta } from "./pose-cache";
 
-export interface BoneSegment {
-  parentIndex: number;
-  childIndex: number;
-  /** Relative thickness, used to weight stroke width/volume in the emitter stage. */
-  thickness: number;
-}
-
-/** One bone per non-root joint (parent -> child), derived from the BVH hierarchy. Finger/
- * thumb bones are dropped entirely — the toy paints a recognizable biped (torso, head, arms,
- * legs), and per-finger segments only added clutter without reading as anything at this
- * scale. The hand/wrist bone itself (ForeArm -> Hand) is kept. */
-export function boneSegments(joints: JointMeta[]): BoneSegment[] {
-  const bones: BoneSegment[] = [];
-  for (let childIndex = 0; childIndex < joints.length; childIndex++) {
-    const joint = joints[childIndex];
-    if (joint.parentIndex === -1) continue;
-    if (isFingerBone(joint.name)) continue;
-    bones.push({ parentIndex: joint.parentIndex, childIndex, thickness: boneThickness(joint.name) });
-  }
-  return bones;
-}
-
 export interface Chain {
   /** Ordered joint indices from this chain's start (the root, or a branch point) to its end
    * (a leaf, or the next branch point where child chains continue). */
