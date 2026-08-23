@@ -77,7 +77,16 @@ export function saveParamsToHash(params: ToyParams) {
 }
 
 export function createParamsPanel(container: HTMLElement, params: ToyParams): Pane {
-  const pane = new Pane({ container, title: "params" });
+  // Tweakpane only self-positions (fixed, top-right) when it creates its OWN floating
+  // container. Handed an explicit `container`, it renders inline in normal document flow —
+  // and since the canvas ahead of it is a display:block 100%-height element, the panel got
+  // laid out entirely below the fold and was invisible. Give it its own fixed-position host,
+  // the same way shell/timeline.ts does.
+  const host = document.createElement("div");
+  host.style.cssText = "position:fixed;top:10px;right:10px;width:280px;z-index:10;";
+  container.appendChild(host);
+
+  const pane = new Pane({ container: host, title: "params" });
 
   pane.addBinding(params, "playing");
   pane.addBinding(params, "layersPerSecond", { min: 1, max: 60, step: 1 });
