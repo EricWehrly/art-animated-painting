@@ -7,10 +7,18 @@ import { capturePNG } from "./shell/capture";
 import { loadPoseCache } from "./pose/pose-cache";
 import { boneSegments, buildChains } from "./pose/skeleton";
 import { generateEmitters } from "./pose/emitters";
-import { generateChainStrokes, generateSpeckles, type Stroke, type BoneStrokeStyle, type SpeckleStyle } from "./pose/strokes";
+import {
+  generateChainStrokes,
+  generateSpeckles,
+  type Stroke,
+  type BoneStrokeStyle,
+  type SpeckleStyle,
+  type ChainDebugDab,
+} from "./pose/strokes";
 import { createStrokeMesh } from "./paint/stroke-mesh";
 import { createHeightPass } from "./paint/height-pass";
 import { createShadingPass } from "./paint/shading-pass";
+import { createDebugOverlay, type DebugDancerData } from "./debug/overlay";
 
 async function main() {
   const app = document.getElementById("app");
@@ -52,6 +60,7 @@ async function main() {
   const strokeMesh = createStrokeMesh(maxStrokes);
   const heightPass = createHeightPass(domElement.width, domElement.height);
   const shadingPass = createShadingPass();
+  const debugOverlay = createDebugOverlay();
 
   let currentFrame = 0;
 
@@ -134,8 +143,11 @@ async function main() {
 
   function renderFrame(frame: number) {
     const allStrokes: Stroke[] = [];
+    const debugDancers: DebugDancerData[] = [];
     for (let dancerIndex = 0; dancerIndex < cache.header.dancers.length; dancerIndex++) {
-      allStrokes.push(...generateChainStrokes(cache, chains, dancerIndex, frame, strokeStyleFor(dancerIndex)));
+      const debugDabs: ChainDebugDab[] | undefined = params.debugMode ? [] : undefined;
+      allStrokes.push(...generateChainStrokes(cache, chains, dancerIndex, frame, strokeStyleFor(dancerIndex), debugDabs));
+      if (debugDabs) debugDancers.push({ dancerIndex, debugDabs });
       // Speckles are a fling/spatter effect from motion — meaningless (and distracting from
       // the base figure) in calm calibration mode.
       if (params.duress && params.speckleAmount > 0) {
@@ -148,6 +160,11 @@ async function main() {
     heightPass.render(renderer, strokeMesh.colorMesh, strokeMesh.heightMesh, camera);
     shadingPass.setReliefStrength(params.reliefStrength);
     shadingPass.render(renderer, heightPass.colorSumTexture, heightPass.heightSumTexture);
+
+    // Must run after shadingPass — see debug/overlay.ts's render() doc comment for why.
+    if (params.debugMode) {
+      debugOverlay.render(renderer, camera, cache, chains, frame, debugDancers);
+    }
   }
 
   // Resizing recreates the render targets at the new resolution, which clears their

@@ -72,6 +72,20 @@ export interface BoneStrokeStyle {
   smearScale: number;
 }
 
+/** One entry per dab, for the debug overlay's "each stroke we're intending to take" and
+ * "direction/strength of motion" views — see generateChainStrokes' debugOut parameter. */
+export interface ChainDebugDab {
+  chainIndex: number;
+  /** The brush's actual physical position before/after this dab (NOT the render-inflated
+   * quad extent Stroke.length uses) — the true walk, exactly as painted. */
+  start: [number, number, number];
+  end: [number, number, number];
+  /** The raw instantaneous velocity sampled for this dab, before waver-blending into a
+   * heading. Unlike Stroke.velocity (a billboard direction only), this magnitude is
+   * physically meaningful — it's what an arrow's length should represent. */
+  rawVelocity: [number, number, number];
+}
+
 /** Deterministic pseudo-random in [0, 1) for a given identity — used for per-stroke paint
  * load/pressure (below) and speckle placement (generateSpeckles). */
 function hash(n: number): number {
@@ -122,7 +136,12 @@ export function generateChainStrokes(
   chains: Chain[],
   dancerIndex: number,
   frame: number,
-  style: BoneStrokeStyle
+  style: BoneStrokeStyle,
+  /** Optional — when passed, one entry is pushed per dab as it's computed. Powers the debug
+   * overlay (see debug/overlay.ts): the real walk's own data, not a re-derived approximation,
+   * so the overlay can never show something the actual generator didn't do. undefined in the
+   * normal (non-debug) render path costs nothing beyond the one branch per dab. */
+  debugOut?: ChainDebugDab[]
 ): Stroke[] {
   const strokes: Stroke[] = [];
 
@@ -255,6 +274,10 @@ export function generateChainStrokes(
           (brushPos[1] + newPos[1]) / 2,
           (brushPos[2] + newPos[2]) / 2,
         ];
+
+        if (debugOut) {
+          debugOut.push({ chainIndex, start: brushPos, end: newPos, rawVelocity: velocity });
+        }
 
         // A deliberate overlap here (tried at 1.35x) turned out to be actively harmful: the
         // height field accumulates ADDITIVELY across overlapping instances with no

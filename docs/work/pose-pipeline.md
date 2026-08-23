@@ -431,3 +431,40 @@ Verified visually at frame 0, calm mode, zoomed to a single leg/arm after each o
 fixes — the beaded/gapped look is gone; a limb now reads as one continuous tapering painted
 shape with subtle (not seam-like) texture. Checked frame 180 (duress on) for regressions:
 still bounded/contiguous, no runaway or disjointed strokes.
+
+### Round 10: a diagnostic overlay, so the generator's own data is checkable without guessing
+
+Requested directly, and reasonable given how much of Rounds 3-9 was "render, zoom, squint,
+theorize, re-render" — a debug view onto the generator's actual working data, not just its
+painted output. Three layers, toggled by a new `debugMode` param (main.ts's "debug overlay"
+checkbox), rendered by the new `debug/overlay.ts`:
+
+1. **The outline/character being painted** — the raw chain joint-to-joint polyline (thin
+   white), i.e. literally the "skeleton" the paint strokes are deliberately NOT supposed to
+   trace on their own. Useful as a registration reference against the painted shape.
+2. **Each intended stroke** — every dab's true physical start/end, alternating two colors so
+   adjacent dabs read as distinct strokes rather than one line.
+3. **Motion arrows** — direction and magnitude of the RAW instantaneous velocity sampled at
+   each dab (not the blended heading `Stroke.velocity` carries for billboard orientation,
+   whose magnitude is meaningless — see that field's doc comment).
+
+Layers 2 and 3 are sourced from `generateChainStrokes` itself via a new optional `debugOut`
+parameter it pushes a `ChainDebugDab` into per dab — deliberately not a parallel/re-derived
+computation, so the overlay can never show something the real generator didn't actually do.
+
+Rendering mechanics: the actual paint never touches the camera-rendered `scene` object at all
+(strokes go through an offscreen height-pass, then shading-pass draws a full-screen quad
+straight to the default framebuffer) — so the debug overlay is a second, ordinary
+camera-rendered `THREE.Scene` (line segments + `THREE.ArrowHelper`s, `depthTest: false`)
+rendered with the SAME renderer/camera immediately after shading-pass, with
+`renderer.autoClear` set false for that one call so it draws on top instead of wiping the
+paint. Rebuilt from scratch every call (dispose + re-add) — simple, and cheap enough at this
+instance count for a debug-only path.
+
+Verified at frame 0 (calm) and frame 180 (duress on, mid-motion): no console errors either
+way, all three layers render aligned with the painted figure. Useful and unexpected finding
+from the arrows themselves: even at frame 0 with duress off (paint ignoring motion entirely),
+the arrows show real nonzero velocity — the mocap dancers aren't in a static rest pose at
+frame 0, they're mid-motion throughout. "No force" in the Round 9 test meant the PAINT wasn't
+reacting to motion, not that the underlying motion was zero — worth keeping in mind when
+using a specific frame as a calm reference.

@@ -29,6 +29,11 @@ export interface ToyParams {
    * figure (recognizable torso/head/arms/legs) independent of any motion effect. See
    * docs/work/pose-pipeline.md. */
   duress: boolean;
+  /** Overlays the generator's own working data on top of the painted result: the raw bone
+   * chain outline (the shape strokes are meant to cover), every individual intended stroke,
+   * and arrows for each dab's raw sampled velocity (direction + relative strength). See
+   * debug/overlay.ts. */
+  debugMode: boolean;
 }
 
 export const defaultParams: ToyParams = {
@@ -46,6 +51,7 @@ export const defaultParams: ToyParams = {
   speckleAmount: 0.6,
   pressureVariance: 0.5,
   duress: true,
+  debugMode: false,
 };
 
 /** Reads params from the URL hash (if present), falling back to defaults. */
@@ -80,6 +86,7 @@ export function createParamsPanel(container: HTMLElement, params: ToyParams): Pa
   pane.addBinding(params, "speckleAmount", { min: 0, max: 2, step: 0.05 });
   pane.addBinding(params, "pressureVariance", { min: 0, max: 1, step: 0.05 });
   pane.addBinding(params, "duress", { label: "duress (motion pressure)" });
+  pane.addBinding(params, "debugMode", { label: "debug overlay" });
 
   pane.on("change", () => saveParamsToHash(params));
 
