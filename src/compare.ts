@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { loadPoseCache } from "./pose/pose-cache";
 import { buildChains } from "./pose/skeleton";
-import { generateChainRibbons, type BoneStrokeStyle } from "./pose/strokes";
-import { createRibbonMesh } from "./paint/stroke-mesh";
+import { generateChainMarks, type BoneStrokeStyle } from "./pose/strokes";
+import { createStrokeMesh } from "./paint/stroke-mesh";
 import { createHeightPass } from "./paint/height-pass";
 import { createShadingPass } from "./paint/shading-pass";
 
@@ -11,22 +11,27 @@ import { createShadingPass } from "./paint/shading-pass";
 // separately-scrubbed sessions of the main toy against each other. See
 // docs/work/pose-pipeline.md Round 11.
 //
-// Frame 68 defaults to the case that prompted this: at high limb speed, the seeking brush's
-// waver can bow visibly away from the true bone line before it converges back — mathematically
-// guaranteed to make progress every step (maxWaverBlend < 0.5), but "always getting closer"
-// doesn't mean "stays close to the line," and a sustained high-speed run gives the sideways
-// component many consecutive dabs to bow the path into a loop before it snaps back.
+// Frame 68 defaults to the case that prompted this: at high limb speed, a mark's heading gets
+// pulled hard toward the local instantaneous motion direction (see generateChainMarks'
+// motionForceScale/maxMotionForce) — unlike the old seeking-brush model this replaced, there's
+// no stability ceiling forcing that blend to stay a minority, so how far motion is allowed to
+// pull marks off the bone tangent is purely an art-direction choice. This page is for judging
+// that choice by eye.
 
 const BASE_STYLE: Omit<BoneStrokeStyle, "color"> = {
   widthScale: 1.7,
   lengthScale: 1,
   volumeScale: 0.35,
   pressureVariance: 0.5,
-  maxStrokeLength: 1.8,
-  minStrokeLength: 0.6,
-  waverScale: 1.2,
-  maxWaverBlend: 0.4,
-  smearScale: 1.5,
+  markLength: 2.3,
+  minMarkLength: 0.5,
+  maxMarkLength: 4.5,
+  overlapAlong: 0.55,
+  markWidth: 0.8,
+  angleJitter: 0.4,
+  motionForceScale: 1.0,
+  maxMotionForce: 0.75,
+  smearScale: 1.2,
 };
 
 interface Variant {
@@ -36,14 +41,14 @@ interface Variant {
 
 function buildVariants(color: [number, number, number]): Variant[] {
   return [
-    { label: "current (waverScale 1.2, maxWaverBlend 0.4)", style: { ...BASE_STYLE, color } },
+    { label: "current (motionForce 1.0/0.75, smear 1.2)", style: { ...BASE_STYLE, color } },
     {
-      label: "tighter waver (waverScale 0.5, maxWaverBlend 0.18)",
-      style: { ...BASE_STYLE, color, waverScale: 0.5, maxWaverBlend: 0.18 },
+      label: "tighter motion force (0.4/0.3, smear 0.5)",
+      style: { ...BASE_STYLE, color, motionForceScale: 0.4, maxMotionForce: 0.3, smearScale: 0.5 },
     },
     {
-      label: "no waver — pure bone-aligned (waverScale 0)",
-      style: { ...BASE_STYLE, color, waverScale: 0, maxWaverBlend: 0 },
+      label: "no motion force — pure bone-aligned (0/0/0)",
+      style: { ...BASE_STYLE, color, motionForceScale: 0, maxMotionForce: 0, smearScale: 0 },
     },
   ];
 }
@@ -74,8 +79,10 @@ async function main() {
   // One shared pipeline, reused sequentially per variant/strip — each variant's height/color
   // accumulation is independent because heightPass.render() clears its targets before drawing
   // (see height-pass.ts), so nothing leaks between strips despite reusing the same RTs.
-  const ribbonViewForward = CAMERA_TARGET.clone().sub(CAMERA_POSITION).normalize();
-  const ribbonMesh = createRibbonMesh(ribbonViewForward);
+  const viewForwardVec = CAMERA_TARGET.clone().sub(CAMERA_POSITION).normalize();
+  const viewForward: [number, number, number] = [viewForwardVec.x, viewForwardVec.y, viewForwardVec.z];
+  // Generous headroom for one dancer's worth of marks — see main.ts's maxMarksPerChainEstimate.
+  const strokeMesh = createStrokeMesh(chains.length * 140);
   const heightPass = createHeightPass(1, 1); // real size set in resize()
   const shadingPass = createShadingPass();
 
@@ -100,10 +107,10 @@ async function main() {
     renderer.setScissorTest(true);
 
     variants.forEach((variant, i) => {
-      const ribbons = generateChainRibbons(cache, chains, dancerIndex, frame, variant.style);
-      ribbonMesh.setRibbons(ribbons);
+      const marks = generateChainMarks(cache, chains, dancerIndex, frame, variant.style, viewForward);
+      strokeMesh.setStrokes(marks);
 
-      heightPass.render(renderer, ribbonMesh.colorMesh, ribbonMesh.heightMesh, camera);
+      heightPass.render(renderer, strokeMesh.colorMesh, strokeMesh.heightMesh, camera);
       shadingPass.setReliefStrength(22);
 
       const x = i * stripWidth;

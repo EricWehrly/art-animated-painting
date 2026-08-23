@@ -8,15 +8,14 @@ import { loadPoseCache } from "./pose/pose-cache";
 import { boneSegments, buildChains } from "./pose/skeleton";
 import { generateEmitters } from "./pose/emitters";
 import {
-  generateChainRibbons,
+  generateChainMarks,
   generateSpeckles,
   type Stroke,
-  type Ribbon,
   type BoneStrokeStyle,
   type SpeckleStyle,
   type ChainDebugDab,
 } from "./pose/strokes";
-import { createStrokeMesh, createRibbonMesh } from "./paint/stroke-mesh";
+import { createStrokeMesh } from "./paint/stroke-mesh";
 import { createHeightPass } from "./paint/height-pass";
 import { createShadingPass } from "./paint/shading-pass";
 import { createDebugOverlay, type DebugDancerData } from "./debug/overlay";
@@ -35,14 +34,11 @@ async function main() {
   const pane = createParamsPanel(app, params);
 
   const cache = await loadPoseCache("/data");
-  // Main figure strokes walk whole CHAINS (a whole limb, e.g. hip-to-toe or shoulder-to-wrist)
-  // as one continuous traveling brush and render as a single connected ribbon mesh per chain
-  // — see generateChainRibbons in pose/strokes.ts, buildChains in pose/skeleton.ts, and
-  // paint/stroke-mesh.ts's ribbon renderer. `bones` (the old per-bone list) is kept only for
-  // speckle placement, which still wants independent per-bone velocity sampling, not
-  // chain-level coverage. Speckles themselves stay on the older instanced-dab path (they're
-  // standalone marks, not a connected shape, so there's no seam for the ribbon approach to
-  // need to solve).
+  // Main figure strokes cover whole CHAINS (a whole limb, e.g. hip-to-toe or shoulder-to-wrist)
+  // with many independent brush marks tiled along and across the chain's own shape — see
+  // generateChainMarks in pose/strokes.ts and buildChains in pose/skeleton.ts.
+  // `bones` (the old per-bone list) is kept only for speckle placement, which still wants
+  // independent per-bone velocity sampling, not chain-level coverage.
   const bones = boneSegments(cache.header.joints);
   const chains = buildChains(cache.header.joints);
   const frameCount = cache.header.frameCount;
@@ -51,23 +47,19 @@ async function main() {
   const speckleSamplesPerBone = 3;
   const speckleMaxCount = 6;
   const speckleEmittersTotal = bones.length * speckleSamplesPerBone * cache.header.dancers.length;
-  // Generous headroom — setStrokes() silently caps at this budget, so this only needs to
-  // comfortably cover the worst case speckle count, not be exact.
-  const maxStrokes = speckleEmittersTotal * speckleMaxCount * 2;
+  // Generous headroom, not an exact count — see generateChainMarks' own doc comment for why
+  // its per-chain mark count isn't a simple closed form (it depends on each bone's own length
+  // and width relative to the tuned style's markLength/markWidth). setStrokes() silently caps
+  // at this budget.
+  const maxMarksPerChainEstimate = 90;
+  const mainMarksTotal = chains.length * maxMarksPerChainEstimate * cache.header.dancers.length;
+  const maxStrokes = mainMarksTotal + speckleEmittersTotal * speckleMaxCount * 2;
 
   const strokeMesh = createStrokeMesh(maxStrokes);
-  // The camera's viewing angle is a fixed, build-time constant (see shell/canvas.ts) — the
-  // ribbon mesh uses that to compute each point's sideways (width) axis once on the CPU
-  // instead of needing per-vertex view-space billboarding in a shader.
-  const ribbonViewForward = CAMERA_HOME_TARGET.clone().sub(CAMERA_HOME_POSITION).normalize();
-  const ribbonMesh = createRibbonMesh(ribbonViewForward);
-  // heightPass.render() clears its targets before drawing, so combining both meshes into one
-  // call (via these groups) is what lets speckles and ribbons land in the SAME accumulated
-  // frame — calling render() twice would have the second call's clear erase the first.
-  const colorGroup = new THREE.Group();
-  colorGroup.add(strokeMesh.colorMesh, ribbonMesh.colorMesh);
-  const heightGroup = new THREE.Group();
-  heightGroup.add(strokeMesh.heightMesh, ribbonMesh.heightMesh);
+  // The camera's viewing angle is a fixed, build-time constant (see shell/canvas.ts) —
+  // generateChainMarks uses that to derive each mark's across-limb (lane) axis on the CPU.
+  const viewForwardVec = CAMERA_HOME_TARGET.clone().sub(CAMERA_HOME_POSITION).normalize();
+  const viewForward: [number, number, number] = [viewForwardVec.x, viewForwardVec.y, viewForwardVec.z];
   const heightPass = createHeightPass(domElement.width, domElement.height);
   const shadingPass = createShadingPass();
   const debugOverlay = createDebugOverlay();
@@ -108,34 +100,40 @@ async function main() {
 
   function strokeStyleFor(dancerIndex: number): BoneStrokeStyle {
     // Calm mode ("duress" off): a single shared color for both dancers, and every
-    // motion-driven effect zeroed — pure bone-aligned "connect the dots" coverage, for
-    // calibrating the base figure (recognizable torso/head/arms/legs) independent of how
-    // motion later bends it. See docs/work/pose-pipeline.md Round 5.
+    // motion-driven effect zeroed — pure bone-aligned coverage (still with the always-on
+    // angleJitter/lane structure that makes it read as painted, not a wire), for calibrating
+    // the base figure independent of how motion later bends it. See docs/work/pose-pipeline.md
+    // Round 5, Round 13.
     const hex = params.duress ? (dancerIndex === 0 ? params.colorA : params.colorB) : params.colorA;
     const c = new THREE.Color(hex);
     return {
       color: [c.r, c.g, c.b],
-      // Bumped from 1.2: a limb needs to read as a painted shape with real width, not a
-      // hairline wire tracing the bone — thin strokes are also what made per-dab facet
-      // texture (stroke-mesh.ts facetGate) read as literal beads instead of surface texture.
       widthScale: 1.7 * params.strokeWidthScale,
       lengthScale: params.strokeLengthScale,
       volumeScale: 0.35,
       pressureVariance: params.pressureVariance,
-      // A dab can carry at most this many world units of paint before it needs "reloading" —
-      // kept short relative to a limb's own length (thighs/shins, ~7.3 units in the CMU
-      // data) so several dabs always overlap-build a limb rather than one or two big dabs
-      // reading as their own distinct segments with a visible seam between them.
-      maxStrokeLength: 1.8,
-      minStrokeLength: 0.6,
-      // Calibrated so a "fast" limb (across-bone speed ~0.45, roughly the speckle-fling
-      // threshold's neighborhood) sits near the maxWaverBlend cap rather than far under it.
-      // maxWaverBlend MUST stay below 0.5 (see the doc comment on BoneStrokeStyle) or the
-      // brush's target-seeking loses its guaranteed majority and can run away instead of
-      // converging — 0.4 keeps a comfortable margin.
-      waverScale: params.duress ? 1.2 : 0,
-      maxWaverBlend: params.duress ? 0.4 : 0,
-      smearScale: params.duress ? 1.5 : 0,
+      // Elongated relative to markWidth — a mark needs a real length-to-width ratio to read as
+      // a brush gesture; close to 1:1 reads as a stamped coin/ring instead (see
+      // docs/work/pose-pipeline.md Round 13's first attempt).
+      markLength: 2.3,
+      minMarkLength: 0.5,
+      maxMarkLength: 4.5,
+      // How much successive along-arc marks overlap — generous enough that any given point is
+      // usually covered by several marks' bodies, not just one mark's fading tip, which is
+      // what keeps a dab's own end-cap taper from reading as a visible groove at its boundary.
+      overlapAlong: 0.55,
+      // A single lane's target width — how many parallel passes a limb's local width needs
+      // (round(localWidth / markWidth)) is what makes a hip read as several strokes wide and
+      // a forearm as one, instead of every limb being one uniform-width line.
+      markWidth: 0.8,
+      // Always on, independent of duress — see BoneStrokeStyle's doc comment. ~23 degrees.
+      angleJitter: 0.4,
+      // Unlike the old seeking-brush's maxWaverBlend, this has no 0.5 stability ceiling (see
+      // BoneStrokeStyle doc comment) — these values are an art-direction choice, not a
+      // correctness one.
+      motionForceScale: params.duress ? 1.0 : 0,
+      maxMotionForce: params.duress ? 0.75 : 0,
+      smearScale: params.duress ? 1.2 : 0,
     };
   }
 
@@ -153,7 +151,6 @@ async function main() {
 
   function renderFrame(frame: number) {
     const allStrokes: Stroke[] = [];
-    const allRibbons: Ribbon[] = [];
     const debugDancers: DebugDancerData[] = [];
     for (let dancerIndex = 0; dancerIndex < cache.header.dancers.length; dancerIndex++) {
       // -1 = both dancers (default). Isolating one dancer removes the other from the canvas
@@ -161,7 +158,7 @@ async function main() {
       // single body hard to read (see the frame-68 case).
       if (params.soloDancer !== -1 && dancerIndex !== params.soloDancer) continue;
       const debugDabs: ChainDebugDab[] | undefined = params.debugMode ? [] : undefined;
-      allRibbons.push(...generateChainRibbons(cache, chains, dancerIndex, frame, strokeStyleFor(dancerIndex), debugDabs));
+      allStrokes.push(...generateChainMarks(cache, chains, dancerIndex, frame, strokeStyleFor(dancerIndex), viewForward, debugDabs));
       if (debugDabs) debugDancers.push({ dancerIndex, debugDabs });
       // Speckles are a fling/spatter effect from motion — meaningless (and distracting from
       // the base figure) in calm calibration mode.
@@ -171,9 +168,8 @@ async function main() {
       }
     }
     strokeMesh.setStrokes(allStrokes);
-    ribbonMesh.setRibbons(allRibbons);
 
-    heightPass.render(renderer, colorGroup, heightGroup, camera);
+    heightPass.render(renderer, strokeMesh.colorMesh, strokeMesh.heightMesh, camera);
     shadingPass.setReliefStrength(params.reliefStrength);
     shadingPass.render(renderer, heightPass.colorSumTexture, heightPass.heightSumTexture);
 

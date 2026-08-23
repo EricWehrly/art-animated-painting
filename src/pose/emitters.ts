@@ -19,9 +19,8 @@ export interface Emitter {
  * bones have tiny per-frame deltas, and finite-difference noise on those was showing up as
  * incoherent stroke orientation).
  *
- * Takes raw joint indices rather than a `BoneSegment` so the same helper works for a chain's
- * current segment as it travels across several bones (see pose/strokes.ts
- * generateChainStrokes), not just one bone in isolation.
+ * Takes raw joint indices rather than a `BoneSegment` so the same helper works for any segment
+ * of a chain (see pose/strokes.ts generateChainMarks), not just one bone in isolation.
  *
  * Deliberately a per-point query, not "the bone's velocity" — a rotating limb's tip and base
  * move differently, and averaging them into one value per bone was tried and rejected (see
@@ -72,8 +71,8 @@ export function sampleBoneAtT(
 /**
  * Samples `samplesPerBone` evenly-spaced points along every bone segment for one dancer at
  * one frame. Used for speckle placement (generateSpeckles wants several velocity samples
- * along a rotating limb); main stroke coverage now walks whole chains adaptively instead —
- * see pose/strokes.ts generateChainStrokes.
+ * along a rotating limb); main figure coverage samples velocity per-mark instead — see
+ * pose/strokes.ts generateChainMarks.
  */
 export function generateEmitters(
   cache: PoseCache,

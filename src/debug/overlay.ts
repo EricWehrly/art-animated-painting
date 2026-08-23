@@ -45,10 +45,10 @@ const ARROW_COLOR = 0x30e0ff;
 
 /**
  * Three debug layers, per the request: (1) the outline/character we're trying to paint — the
- * raw bone-chain polyline itself, i.e. exactly the literal "skeleton" the real paint strokes
- * are deliberately NOT supposed to trace; (2) each stroke actually intended — every dab's true
- * start/end, from the real generateChainStrokes walk (via its debugOut parameter), not a
- * re-derived approximation, so this view can never show something the generator didn't
+ * raw bone-chain polyline itself, i.e. the target region the real paint marks are placed to
+ * cover, not trace; (2) each mark actually intended — every dab's true start/end, from the
+ * real generateChainMarks placement (via its debugOut parameter), not a re-derived
+ * approximation, so this view can never show something the generator didn't
  * actually do; (3) arrows for the raw sampled velocity at each dab — direction and length
  * (relative strength), separate from the strokes' own blended heading.
  */

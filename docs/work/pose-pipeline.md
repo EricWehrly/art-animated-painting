@@ -578,3 +578,100 @@ correctly isolating that remaining busyness as the separate, already-diagnosed R
 three-way comparison page after the rewrite: all three variants' limbs are now equally clean,
 and the only visible difference between them is exactly the path-bowing at the torso — the
 comparison now isolates precisely the one variable it was built to isolate.
+
+### Round 13: the brush was still tracing the bone, not painting a region — replaced the
+walk with target-region coverage plus motion as an applied force
+
+User's framing this round, alongside a reference photo of real impasto tulips: "I'm trying to
+get you to drive this figure that wants to be painted, and constraints we'll use to paint it.
+The stick figure at rest, no motion applied, should just look like someone tried to paint a
+stick figure in the area where the bones signaled. It should look like it was oil painted from
+a pallet with a brush. We're getting close to that, but we're following the position of the
+bones rather than the rules of the paint applying to the shape we pursue."
+
+Named two structural mismatches with the reference image, independent of anything already
+built:
+
+1. **Nothing was ever "on top."** Color accumulates additively and divides by coverage — an
+   average, not an occlusion. Two strokes crossing read as a blend, never one over the other.
+   (Left as-is this round — the user deferred [paint-accumulator](paint-accumulator.md)'s
+   occlusion/decay work explicitly, see below — but it's the reason the reference's layered
+   look isn't fully reachable yet.)
+2. **The brush was required to reach the end of the bone.** `generateChainRibbons` (Round 12)
+   walked joint to joint with a heading that always kept a majority weight toward the next
+   joint (`maxWaverBlend < 0.5`, a hard stability requirement for a walk that has to converge).
+   Motion could only ever bend that walk, never really drive it. The user's own framing: "the
+   brush knows both the area it wants to paint, and the motion that will be applied to it, and
+   so paints along the motion into the area it wants to fill" — direction reversed from what
+   the code did.
+
+**The fix: stop walking chains, cover them.** `generateChainRibbons` is gone.
+`generateChainMarks` (pose/strokes.ts) treats each chain's own joint-to-joint shape as a
+*target region* — exactly the polyline the debug overlay's outline layer already draws — and
+tiles independent brush marks across it: along its length (arc-length slots, spaced by
+`markLength * (1 - overlapAlong)`) AND across its width (`round(localWidth / markWidth)`
+parallel lanes, so a hip gets several passes and a forearm gets one). A mark's heading defaults
+to the bone tangent plus a small always-on jitter (`angleJitter` — present with NO motion at
+all, since a real brush stroke isn't perfectly axial even deliberately tracing a line) and is
+pulled toward the locally-sampled instantaneous velocity direction by an amount that grows with
+speed (`motionForceScale`/`maxMotionForce`); a fast mark also stretches longer (`smearScale`),
+so paint streaks past where the bone actually is rather than tracing it. Because marks are
+independent, there is no convergence requirement — `maxMotionForce` has no 0.5 stability
+ceiling the way the old `maxWaverBlend` did; it's a pure art-direction knob now.
+
+**This reopens, and re-solves, the Round 12 seam question.** Independent marks are exactly what
+Round 12 moved away from. But the Round 12 seam ("rings separated by masts") came from
+*mechanical periodicity* — uniform length, uniform angle, dabs placed end-to-end along one
+line — not from the marks being independent primitives per se. Round 13's placement is
+deliberately irregular at every level: along-slot centers, lane offsets, headings, and lengths
+each carry independent per-mark jitter, and (critical fix mid-round, see below) each lane's
+position is decorrelated ALONG the bone too, not just across it, so lanes at the same along-slot
+don't line up into a ladder. Real oil paint IS built from many overlapping, irregular gestures —
+that's what the reference image is — so irregularity, not one unbroken mesh, is what actually
+avoids the artifact. `stroke-mesh.ts`'s ribbon renderer (the real connected triangle-strip mesh
+built last round) is deleted as unused; the dab renderer it was built to replace covers the main
+figure again.
+
+**First attempt still looked wrong** — capturing a solo dancer at rest showed a tight, regular,
+perpendicular-banded "inchworm" look, not an improvement on the rings. Diagnosis: marks were
+close to square (markLength 1.4 vs. lane widths often 1.0–1.5), so each one read as a stamped
+coin, and lanes at the same along-slot sat at the exact same arc position, differing only in
+their sideways offset — a rigid ladder. Fixed by (a) elongating marks well past their width
+(markLength 2.3 vs markWidth 0.8, a real stroke aspect ratio, not a disc), (b) decorrelating
+each lane's own along-bone position with independent jitter, (c) raising angleJitter to ~23°,
+and (d) raising density (`overlapAlong` 0.35 → 0.55, `numAlong` floor 1 → 2 per bone segment)
+so any given point is usually covered by several marks' bodies, not just one mark's fading tip
+— that tip is what reads as a groove, and only enough overlapping coverage hides it. The
+`numAlong` floor also fixed a real coverage gap: a short bone (hand, foot) getting only one
+along-slot had a single randomized length deciding whether it bridged to the next segment at
+all; a miss there was a visible break at the joint.
+
+Verified: solo dancer at rest (frame 0, duress off) now shows genuinely varied, overlapping,
+angled strokes with no repeating lattice — a zoomed thigh crop shows individual marks crossing
+each other at visibly different angles, the closest yet to "someone painted a stick figure with
+a brush." Frame 68 (duress on, both dancers) shows marks visibly thrown along the motion
+direction — streaked, elongated, overshooting past the bone — reading as a figure caught
+mid-motion rather than a wobbling tube. Re-ran the three-way comparison page (relabeled for the
+new motionForceScale/maxMotionForce/smearScale fields): the "no motion force" strip is a clean,
+tightly bone-aligned figure, "current" shows visibly thrown strokes, and the middle setting
+interpolates cleanly between them — confirming the tool isolates the one variable it names.
+Debug overlay (outline/marks/arrows) checked against frame 68 and shows dense, correctly varied
+mark placement matching the new model exactly, with no changes needed to overlay.ts itself
+(`ChainDebugDab`'s start/end/rawVelocity shape didn't change). swatch.html and compare.html both
+load with no console errors.
+
+**Explicitly out of scope this round, on the user's direction:** cross-frame accumulation.
+"We're going to continue delaying that... We haven't arrived at the underlying style yet, and
+we need to do that." The user confirmed [paint-accumulator](paint-accumulator.md)'s existing
+plan is right in shape (wipe-and-replay with decayed under-layers) for when this resumes, and
+added one constraint for that future work: "there'll need to be very few accumulations of paint
+in a single layer, so there's still some readability for the layers underneath" — i.e. a single
+layer/frame needs to stay sparse enough that a decayed layer beneath it can still read through,
+which argues for tuning mark density down (or coverage-gating it) once accumulation is live,
+not for the dense full-coverage tuning this round's at-rest calibration used.
+
+Also fixed this round, unrelated to the above: the Tweakpane params panel was in the DOM but
+laid out entirely below the viewport (Tweakpane only self-positions when it owns its own
+floating container; handed `#app` — which the full-height canvas already fills via normal
+document flow — it rendered inline, below the fold). Given its own fixed-position host in
+shell/params.ts, the same way shell/timeline.ts's scrub bar already had one.

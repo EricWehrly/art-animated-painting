@@ -33,12 +33,10 @@ export interface Chain {
 
 /**
  * Groups bones into maximal unbranched chains: the whole spine+neck+head is one chain, each
- * arm is its own chain, each leg (hip to toe) is its own chain. A chain is meant to be
- * painted as ONE continuous traveling brush path (see pose/strokes.ts generateChainStrokes)
- * rather than each bone getting its own independent stroke decision — the figure only "lifts
- * the brush" at branch points (shoulders, hips), which is also naturally where limbs attach,
- * so the figure still reads as fully connected even though each chain's paint is independent.
- * See docs/work/pose-pipeline.md.
+ * arm is its own chain, each leg (hip to toe) is its own chain. A chain is the unit of
+ * coverage for pose/strokes.ts generateChainMarks — its own joint-to-joint shape is the target
+ * region many independent marks tile across — rather than each bone getting its own
+ * independent decision. See docs/work/pose-pipeline.md.
  */
 export function buildChains(joints: JointMeta[]): Chain[] {
   const children: number[][] = joints.map(() => []);
