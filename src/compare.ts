@@ -1,0 +1,137 @@
+import * as THREE from "three";
+import { loadPoseCache } from "./pose/pose-cache";
+import { buildChains } from "./pose/skeleton";
+import { generateChainStrokes, type BoneStrokeStyle } from "./pose/strokes";
+import { createStrokeMesh } from "./paint/stroke-mesh";
+import { createHeightPass } from "./paint/height-pass";
+import { createShadingPass } from "./paint/shading-pass";
+
+// Same body, same pose, several different BoneStrokeStyle variants side by side — built to
+// answer "is this a tuning problem or a structural one" without having to eyeball two
+// separately-scrubbed sessions of the main toy against each other. See
+// docs/work/pose-pipeline.md Round 11.
+//
+// Frame 68 defaults to the case that prompted this: at high limb speed, the seeking brush's
+// waver can bow visibly away from the true bone line before it converges back — mathematically
+// guaranteed to make progress every step (maxWaverBlend < 0.5), but "always getting closer"
+// doesn't mean "stays close to the line," and a sustained high-speed run gives the sideways
+// component many consecutive dabs to bow the path into a loop before it snaps back.
+
+const BASE_STYLE: Omit<BoneStrokeStyle, "color"> = {
+  widthScale: 1.7,
+  lengthScale: 1,
+  volumeScale: 0.35,
+  pressureVariance: 0.5,
+  maxStrokeLength: 1.8,
+  minStrokeLength: 0.6,
+  waverScale: 1.2,
+  maxWaverBlend: 0.4,
+  smearScale: 1.5,
+};
+
+interface Variant {
+  label: string;
+  style: BoneStrokeStyle;
+}
+
+function buildVariants(color: [number, number, number]): Variant[] {
+  return [
+    { label: "current (waverScale 1.2, maxWaverBlend 0.4)", style: { ...BASE_STYLE, color } },
+    {
+      label: "tighter waver (waverScale 0.5, maxWaverBlend 0.18)",
+      style: { ...BASE_STYLE, color, waverScale: 0.5, maxWaverBlend: 0.18 },
+    },
+    {
+      label: "no waver — pure bone-aligned (waverScale 0)",
+      style: { ...BASE_STYLE, color, waverScale: 0, maxWaverBlend: 0 },
+    },
+  ];
+}
+
+const CAMERA_POSITION = new THREE.Vector3(0, 20, 42);
+const CAMERA_TARGET = new THREE.Vector3(0, 15, 0);
+
+async function main() {
+  const appEl = document.getElementById("app");
+  if (!appEl) throw new Error("missing #app container");
+  const app: HTMLElement = appEl;
+
+  const frameInput = document.getElementById("frame-input") as HTMLInputElement;
+  const dancerInput = document.getElementById("dancer-input") as HTMLSelectElement;
+  const labelEls = [0, 1, 2].map((i) => document.getElementById(`label-${i}`) as HTMLDivElement);
+
+  const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  app.appendChild(renderer.domElement);
+
+  const camera = new THREE.PerspectiveCamera(45, 1, 1, 2000);
+  camera.position.copy(CAMERA_POSITION);
+  camera.lookAt(CAMERA_TARGET);
+
+  const cache = await loadPoseCache("/data");
+  const chains = buildChains(cache.header.joints);
+  const maxDabsPerChain = 40;
+  const maxStrokes = chains.length * maxDabsPerChain;
+
+  // One shared pipeline, reused sequentially per variant/strip — each variant's height/color
+  // accumulation is independent because heightPass.render() clears its targets before drawing
+  // (see height-pass.ts), so nothing leaks between strips despite reusing the same RTs.
+  const strokeMesh = createStrokeMesh(maxStrokes);
+  const heightPass = createHeightPass(1, 1); // real size set in resize()
+  const shadingPass = createShadingPass();
+
+  function render() {
+    const frame = Math.max(0, Math.min(cache.header.frameCount - 1, Number(frameInput.value) || 0));
+    const dancerIndex = Number(dancerInput.value) || 0;
+    const c = new THREE.Color(dancerIndex === 0 ? "#c94e3d" : "#3d6fc9");
+    const variants = buildVariants([c.r, c.g, c.b]);
+
+    const dpr = renderer.getPixelRatio();
+    const totalWidth = app.clientWidth;
+    const height = app.clientHeight;
+    const stripWidth = Math.floor(totalWidth / variants.length);
+
+    renderer.setSize(totalWidth, height, false);
+    camera.aspect = stripWidth / height;
+    camera.updateProjectionMatrix();
+    const rtWidth = Math.round(stripWidth * dpr);
+    const rtHeight = Math.round(height * dpr);
+    heightPass.setSize(rtWidth, rtHeight);
+    shadingPass.setResolution(rtWidth, rtHeight);
+    renderer.setScissorTest(true);
+
+    variants.forEach((variant, i) => {
+      const strokes = generateChainStrokes(cache, chains, dancerIndex, frame, variant.style);
+      strokeMesh.setStrokes(strokes);
+
+      heightPass.render(renderer, strokeMesh.colorMesh, strokeMesh.heightMesh, camera);
+      shadingPass.setReliefStrength(22);
+
+      const x = i * stripWidth;
+      renderer.setViewport(x, 0, stripWidth, height);
+      renderer.setScissor(x, 0, stripWidth, height);
+      shadingPass.render(renderer, heightPass.colorSumTexture, heightPass.heightSumTexture);
+
+      const labelEl = labelEls[i];
+      if (labelEl) {
+        labelEl.textContent = variant.label;
+        labelEl.style.left = `${x}px`;
+        labelEl.style.width = `${stripWidth}px`;
+      }
+    });
+
+    renderer.setScissorTest(false);
+  }
+
+  frameInput.addEventListener("input", render);
+  dancerInput.addEventListener("input", render);
+  window.addEventListener("resize", render);
+
+  render();
+}
+
+main().catch((err) => {
+  console.error(err);
+  const app = document.getElementById("app");
+  if (app) app.textContent = `Failed to start: ${(err as Error).message}`;
+});

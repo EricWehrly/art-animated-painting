@@ -468,3 +468,38 @@ the arrows show real nonzero velocity — the mocap dancers aren't in a static r
 frame 0, they're mid-motion throughout. "No force" in the Round 9 test meant the PAINT wasn't
 reacting to motion, not that the underlying motion was zero — worth keeping in mind when
 using a specific frame as a calm reference.
+
+### Round 11: two follow-ups on the debug overlay, plus a real bug it found (frame 68)
+
+- **Arrows now respect `duress`.** They were drawing real sampled velocity regardless of
+  whether the paint was reacting to it — informative once (the Round 10 finding above), but
+  misleading as a steady-state view when motion is deliberately disabled. `debugOverlay.render`
+  takes a `showArrows` argument now; main.ts passes `params.duress`.
+- **`soloDancer` param** (both / dancer 1 / dancer 2) — isolates one dancer's strokes (and
+  debug data) from the canvas entirely, not just visually. Needed because the two dancers
+  overlapping is exactly what makes a single body hard to read (see frame 68 below).
+- **A new comparison page, `compare.html`/`src/compare.ts`.** Same body, same pose, several
+  `BoneStrokeStyle` variants rendered side by side in one canvas (via `renderer.setViewport`/
+  `setScissor` per strip, one shared stroke-mesh/height-pass/shading-pass pipeline reused
+  sequentially — each variant's accumulation is independent because `heightPass.render()`
+  clears its targets before drawing). Frame + dancer are adjustable inputs; defaults to frame
+  68, dancer 1, since that's the case that prompted it.
+
+**What frame 68 turned out to be**: user flagged it as "super busted." Isolating dancer 1 with
+solo-dancer + debug overlay showed the spine/neck chain's PAINTED strokes visibly departing
+from the white bone-outline reference — not a small wobble, a real loop away from the true
+line — right where the cyan arrows were longest (i.e. where sampled velocity was highest).
+This is the seeking-brush's waver doing exactly what it's mathematically allowed to do:
+`maxWaverBlend < 0.5` guarantees the walk always nets closer to its target every step, but
+that's a distance guarantee, not a path-straightness one — nothing stops the sideways
+component from bowing the path into a visible arc over many consecutive dabs before it snaps
+back, and a sustained high-speed stretch (a spin/throw, exactly what frame 68 is) gives it many
+dabs in a row to do that.
+
+Built the compare page around exactly this case to check the hypothesis: same pose (frame 68,
+dancer 1), three variants — current (`waverScale` 1.2, `maxWaverBlend` 0.4), a tighter waver
+(0.5 / 0.18), and zero waver (pure bone-aligned, no motion influence at all). Current is a
+genuinely tangled mess at the spine/neck; tighter waver is readable with some organic wobble
+still intact; zero waver is clean but static. Confirms the diagnosis and gives a concrete
+tuning direction, but which balance of legibility vs. motion energy to land on is an art
+call — left for the user to decide via the tool rather than picked unilaterally.

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>brush parameter comparison</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        background: #16130f;
+        overflow: hidden;
+        height: 100%;
+      }
+      #app {
+        position: fixed;
+        inset: 0;
+      }
+      canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      #back-link {
+        position: fixed;
+        top: 10px;
+        left: 16px;
+        z-index: 10;
+        font: 12px system-ui, sans-serif;
+        color: #eee;
+        text-decoration: none;
+        background: rgba(0, 0, 0, 0.35);
+        padding: 4px 8px;
+        border-radius: 4px;
+      }
+      #controls {
+        position: fixed;
+        top: 10px;
+        right: 16px;
+        z-index: 10;
+        font: 12px system-ui, sans-serif;
+        color: #eee;
+        background: rgba(0, 0, 0, 0.5);
+        padding: 8px 10px;
+        border-radius: 4px;
+        display: flex;
+        gap: 10px;
+        align-items: center;
+      }
+      #controls label {
+        display: flex;
+        gap: 4px;
+        align-items: center;
+      }
+      #controls input[type="number"] {
+        width: 60px;
+      }
+      .strip-label {
+        position: fixed;
+        top: 44px;
+        z-index: 10;
+        font: 11px system-ui, sans-serif;
+        color: #eee;
+        background: rgba(0, 0, 0, 0.5);
+        padding: 3px 6px;
+        text-align: center;
+        box-sizing: border-box;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <a id="back-link" href="/index.html">&larr; painting</a>
+    <div id="controls">
+      <label>frame <input id="frame-input" type="number" value="68" min="0" /></label>
+      <label>
+        dancer
+        <select id="dancer-input">
+          <option value="0">1 (red)</option>
+          <option value="1">2 (blue)</option>
+        </select>
+      </label>
+    </div>
+    <div id="label-0" class="strip-label"></div>
+    <div id="label-1" class="strip-label"></div>
+    <div id="label-2" class="strip-label"></div>
+    <div id="app"></div>
+    <script type="module" src="/src/compare.ts"></script>
+  </body>
+</html>

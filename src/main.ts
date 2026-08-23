@@ -145,6 +145,10 @@ async function main() {
     const allStrokes: Stroke[] = [];
     const debugDancers: DebugDancerData[] = [];
     for (let dancerIndex = 0; dancerIndex < cache.header.dancers.length; dancerIndex++) {
+      // -1 = both dancers (default). Isolating one dancer removes the other from the canvas
+      // entirely, not just visually — the two figures overlapping is exactly what makes a
+      // single body hard to read (see the frame-68 case).
+      if (params.soloDancer !== -1 && dancerIndex !== params.soloDancer) continue;
       const debugDabs: ChainDebugDab[] | undefined = params.debugMode ? [] : undefined;
       allStrokes.push(...generateChainStrokes(cache, chains, dancerIndex, frame, strokeStyleFor(dancerIndex), debugDabs));
       if (debugDabs) debugDancers.push({ dancerIndex, debugDabs });
@@ -163,7 +167,7 @@ async function main() {
 
     // Must run after shadingPass — see debug/overlay.ts's render() doc comment for why.
     if (params.debugMode) {
-      debugOverlay.render(renderer, camera, cache, chains, frame, debugDancers);
+      debugOverlay.render(renderer, camera, cache, chains, frame, debugDancers, params.duress);
     }
   }
 

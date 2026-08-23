@@ -16,6 +16,7 @@ export default defineConfig({
       input: {
         main: "index.html",
         swatch: "swatch.html",
+        compare: "compare.html",
       },
     },
   },

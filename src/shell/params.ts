@@ -34,6 +34,9 @@ export interface ToyParams {
    * and arrows for each dab's raw sampled velocity (direction + relative strength). See
    * debug/overlay.ts. */
   debugMode: boolean;
+  /** -1 = both dancers (default). 0/1 = render only that dancer — removes the other from the
+   * canvas entirely so a single body can be read without the two figures overlapping. */
+  soloDancer: -1 | 0 | 1;
 }
 
 export const defaultParams: ToyParams = {
@@ -52,6 +55,7 @@ export const defaultParams: ToyParams = {
   pressureVariance: 0.5,
   duress: true,
   debugMode: false,
+  soloDancer: -1,
 };
 
 /** Reads params from the URL hash (if present), falling back to defaults. */
@@ -87,6 +91,10 @@ export function createParamsPanel(container: HTMLElement, params: ToyParams): Pa
   pane.addBinding(params, "pressureVariance", { min: 0, max: 1, step: 0.05 });
   pane.addBinding(params, "duress", { label: "duress (motion pressure)" });
   pane.addBinding(params, "debugMode", { label: "debug overlay" });
+  pane.addBinding(params, "soloDancer", {
+    label: "solo dancer",
+    options: { both: -1, "dancer 1": 0, "dancer 2": 1 },
+  });
 
   pane.on("change", () => saveParamsToHash(params));
 

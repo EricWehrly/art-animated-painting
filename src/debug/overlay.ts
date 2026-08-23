@@ -17,7 +17,20 @@ export interface DebugOverlayHandle {
    * camera-rendered `scene` entirely (see main.ts) — so this is the only way to show
    * camera-aligned debug geometry over it. Must run AFTER shadingPass.render() each frame.
    */
-  render(renderer: THREE.WebGLRenderer, camera: THREE.Camera, cache: PoseCache, chains: Chain[], frame: number, dancers: DebugDancerData[]): void;
+  render(
+    renderer: THREE.WebGLRenderer,
+    camera: THREE.Camera,
+    cache: PoseCache,
+    chains: Chain[],
+    frame: number,
+    dancers: DebugDancerData[],
+    /** Arrows represent real sampled velocity regardless of whether the paint is reacting to
+     * it (duress off still samples velocity, it just doesn't apply it — see
+     * pose-pipeline.md Round 10) — drawing them anyway is what surfaced that distinction, but
+     * also reads as misleading when motion is deliberately disabled. Caller passes
+     * params.duress here so arrows track the same on/off state as the paint itself. */
+    showArrows: boolean
+  ): void;
   dispose(): void;
 }
 
@@ -73,7 +86,8 @@ export function createDebugOverlay(): DebugOverlayHandle {
     cache: PoseCache,
     chains: Chain[],
     frame: number,
-    dancers: DebugDancerData[]
+    dancers: DebugDancerData[],
+    showArrows: boolean
   ) {
     clear();
 
@@ -102,7 +116,9 @@ export function createDebugOverlay(): DebugOverlayHandle {
       addLineSegments(strokePtsB, STROKE_COLOR_B);
 
       // 3. Motion arrows — raw sampled velocity per dab, direction + magnitude (clamped so a
-      // single fast joint can't dwarf the rest of the figure).
+      // single fast joint can't dwarf the rest of the figure). Skipped entirely when motion
+      // is off, not just hidden — see the showArrows doc comment above.
+      if (!showArrows) continue;
       for (const dab of debugDabs) {
         const speed = Math.hypot(dab.rawVelocity[0], dab.rawVelocity[1], dab.rawVelocity[2]);
         if (speed < 1e-4) continue;
