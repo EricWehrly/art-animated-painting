@@ -1,8 +1,8 @@
 import * as THREE from "three";
 import { loadPoseCache } from "./pose/pose-cache";
 import { buildChains } from "./pose/skeleton";
-import { generateChainStrokes, type BoneStrokeStyle } from "./pose/strokes";
-import { createStrokeMesh } from "./paint/stroke-mesh";
+import { generateChainRibbons, type BoneStrokeStyle } from "./pose/strokes";
+import { createRibbonMesh } from "./paint/stroke-mesh";
 import { createHeightPass } from "./paint/height-pass";
 import { createShadingPass } from "./paint/shading-pass";
 
@@ -70,13 +70,12 @@ async function main() {
 
   const cache = await loadPoseCache("/data");
   const chains = buildChains(cache.header.joints);
-  const maxDabsPerChain = 40;
-  const maxStrokes = chains.length * maxDabsPerChain;
 
   // One shared pipeline, reused sequentially per variant/strip — each variant's height/color
   // accumulation is independent because heightPass.render() clears its targets before drawing
   // (see height-pass.ts), so nothing leaks between strips despite reusing the same RTs.
-  const strokeMesh = createStrokeMesh(maxStrokes);
+  const ribbonViewForward = CAMERA_TARGET.clone().sub(CAMERA_POSITION).normalize();
+  const ribbonMesh = createRibbonMesh(ribbonViewForward);
   const heightPass = createHeightPass(1, 1); // real size set in resize()
   const shadingPass = createShadingPass();
 
@@ -101,10 +100,10 @@ async function main() {
     renderer.setScissorTest(true);
 
     variants.forEach((variant, i) => {
-      const strokes = generateChainStrokes(cache, chains, dancerIndex, frame, variant.style);
-      strokeMesh.setStrokes(strokes);
+      const ribbons = generateChainRibbons(cache, chains, dancerIndex, frame, variant.style);
+      ribbonMesh.setRibbons(ribbons);
 
-      heightPass.render(renderer, strokeMesh.colorMesh, strokeMesh.heightMesh, camera);
+      heightPass.render(renderer, ribbonMesh.colorMesh, ribbonMesh.heightMesh, camera);
       shadingPass.setReliefStrength(22);
 
       const x = i * stripWidth;

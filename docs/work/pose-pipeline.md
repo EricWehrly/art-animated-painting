@@ -503,3 +503,78 @@ genuinely tangled mess at the spine/neck; tighter waver is readable with some or
 still intact; zero waver is clean but static. Confirms the diagnosis and gives a concrete
 tuning direction, but which balance of legibility vs. motion energy to land on is an art
 call — left for the user to decide via the tool rather than picked unilaterally.
+
+### Round 12: "rings separated by masts" — the real fix was structural, not a shader parameter
+
+User's framing this round: even at rest (no motion), legs showed "uniformly long strokes,
+always overlapping in the same manner, creating this like 'rings separated by masts' look" —
+a bamboo-stalk silhouette with a hard dark line at fairly regular intervals down each limb,
+independent of any motion effect. The request underneath it: "we're following the position of
+the bones rather than the rules of the paint applying to the shape we pursue."
+
+Chased this by isolating one leg (the new `soloDancer` param, requested this round for
+exactly this kind of investigation) and disabling ONE candidate variable at a time, re-
+rendering the same zoomed crop after each:
+
+1. **Per-dab width evaluated only at the dab's start**, not interpolated across it — fixed
+   with `Stroke.widthStart`/`widthEnd`, interpolated per-vertex in the shader. No visible
+   change.
+2. **The `lump` height-texture term** (a fixed ~1.26-world-unit sine period) — forced flat
+   (`lump = 1.0`). No visible change.
+3. **The color pass's own facet-driven pigment step** (`bristle`'s `facetShade` mix, full
+   strength, separate from the height-side version Round 9 already dampened) — forced off. No
+   visible change.
+4. **Render-length overlap** (dabs rendered ~3% longer than their physical travel, left over
+   from Round 9) — set to exactly 1.0x (zero overlap). Partial improvement — marks got
+   thinner/shorter, confirming SOME contribution, but didn't go away.
+5. **Height accumulating additively with no coverage-normalization** (unlike color, which
+   divides by alpha before use — see shading-pass.ts) — added that normalization
+   (`h / max(coverage, 1.0)`) and restored generous overlap (1.3x) to lean on it. Changed the
+   mark's shape (chevron instead of a straight line) but didn't remove it.
+
+Every shader-parameter lever available had now been tried and ruled out, individually and in
+combination. That's the actual signal: the marks were never a tunable texture/height issue —
+Round 9's "beading" fix made the SAME misdiagnosis (see its cause 4) and this is the sequel.
+The real cause is structural: each dab is rendered as an independent billboard quad instance.
+Even with matching width, matching texture phase, and matching coverage math at a shared
+boundary, two SEPARATE primitives meeting edge-to-edge are still two separate primitives —
+independently rasterized, independently antialiased — and nothing at the shader-parameter
+level can make that boundary not exist. No amount of tuning what happens on either side of a
+seam removes the seam itself.
+
+**The fix: stop rendering chains as independent dab quads. Render each chain as one real
+connected mesh.** `generateChainStrokes` (walks a chain, emits a `Stroke` per dab) became
+`generateChainRibbons` (walks the same chain, emits a `Ribbon` — a sequence of `RibbonPoint`s,
+each just a position + width + arc-length + volume). `stroke-mesh.ts` gained a ribbon
+renderer: for each chain, a real triangle-strip `BufferGeometry` built fresh on the CPU each
+frame, two vertices per path point (left/right edge), consecutive points sharing actual
+geometry — there is no boundary between separate primitives for a seam to appear at, by
+construction, not by tuning.
+
+Billboarding without a per-vertex shader trick: the camera's viewing angle never changes (see
+shell/canvas.ts's "fixed camera" decision — only distance/pan do), so the view direction is a
+build-time constant, not something that needs recomputing per vertex in view space. Each
+point's sideways (width) axis is just `tangent × viewForward`, computed once on the CPU,
+giving real baked 3D vertex positions. The fragment shape logic (tear/bristle/facet/lump/
+crown) carried over almost unchanged — 'across' now comes from a per-vertex `side` attribute
+(-1/+1 at the true edges) instead of a UV approximation, and 'alongChain' is the vertex's own
+real arc-length instead of a reconstructed `chainOffset + uv.x*length`. Cap-taper (the old
+`capStart`/`capEnd` shader fade) is gone entirely — the true ends of a chain now taper by the
+ribbon builder shrinking their WIDTH directly (a geometric taper), not a shader fade.
+
+Scope: only the main figure's limbs moved to this. Speckles and the swatch calibration page
+stay on the old instanced-dab path (renamed `Stroke`/`createStrokeMesh`, simplified back down
+— `widthStart`/`widthEnd`/`chainOffset`/`capStart`/`capEnd` all dropped, since a standalone
+dab is always fully capped and was never part of a chain in the first place). Both mesh types
+feed into ONE height-pass call via `THREE.Group` — calling `heightPass.render()` twice would
+have the second call's own clear erase the first's contribution.
+
+Verified: solo-dancer zoomed leg crop after the rewrite shows a genuinely continuous tapering
+limb with no marks at all, at rest. Checked frame 180 and frame 68 (duress on) for
+regressions — the seam is gone there too; frame 68's spine/neck is still visibly bent into an
+arc by the waver, but as ONE continuous connected shape, not a chain of mismatched beads —
+correctly isolating that remaining busyness as the separate, already-diagnosed Round 11 issue
+(how much the waver bends the path), not a re-emergence of this one. Re-ran the Round 11
+three-way comparison page after the rewrite: all three variants' limbs are now equally clean,
+and the only visible difference between them is exactly the path-bowing at the torso — the
+comparison now isolates precisely the one variable it was built to isolate.

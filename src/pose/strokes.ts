@@ -3,37 +3,25 @@ import { jointWorldPosition } from "./pose-cache";
 import type { Chain } from "./skeleton";
 import { sampleBoneAtT, type Emitter } from "./emitters";
 
+/** A single standalone paint dab — a billboard quad, always capped/tapered at both ends. Used
+ * for speckles and the swatch calibration page; the main figure's limbs are rendered as
+ * connected Ribbon meshes instead (see generateChainRibbons) specifically because independent
+ * Stroke instances placed end-to-end show a visible seam at every boundary no matter how
+ * their shared parameters are tuned — see docs/work/pose-pipeline.md Round 12. */
 export interface Stroke {
   position: [number, number, number];
   /** Consumed by stroke-mesh.ts purely as a billboard orientation direction (magnitude
-   * doesn't matter, it's normalized in the vertex shader) — for chain strokes this is the
-   * blended "paint direction" (see generateChainStrokes), not necessarily the true motion. */
+   * doesn't matter, it's normalized in the vertex shader). */
   velocity: [number, number, number];
   /** World-space stroke length. */
   length: number;
-  /** World-space stroke width, ∝ bone thickness. */
+  /** World-space stroke width. */
   width: number;
   /** Feeds the height/relief field — see docs/work/impasto-shading.md. */
   volume: number;
   color: [number, number, number];
   /** Per-instance phase, decorrelates the procedural brush texture between strokes. */
   seed: number;
-  /** World-space distance from this CHAIN's start to this dab's leading (u=0) edge — feeds
-   * stroke-mesh.ts's tear/bristle/facet/lump texture patterns so they're computed from a
-   * continuous coordinate along the whole limb instead of each dab's own local 0..1, which is
-   * what made a chain of touching dabs read as separate beads even once their widths and caps
-   * lined up: each dab's texture pattern independently restarted its phase at 0, so neighbors
-   * never matched at the seam. 0 for strokes that aren't part of a chain (speckles, swatches)
-   * — harmless since those also use a fully independent per-instance seed already. */
-  chainOffset: number;
-  /** Whether this dab's start/end should taper into a rounded brush cap (true — a real
-   * beginning/end of a brush pass) or blend straight through at full coverage (false — an
-   * interior seam continuing from/into an adjacent dab in the same chain). Without this,
-   * consecutive dabs along a chain each pinch closed at both ends regardless of whether
-   * anything else is touching them there, and a chain of touching dabs reads as a beaded/
-   * dashed line instead of one continuous brush stroke. See stroke-mesh.ts strokeShapeGLSL. */
-  capStart: boolean;
-  capEnd: boolean;
 }
 
 export interface BoneStrokeStyle {
@@ -96,15 +84,46 @@ function hash(n: number): number {
 const MAX_DABS_PER_CHAIN_SAFETY = 40; // guards against a runaway loop on degenerate (near-zero
 // minStrokeLength, or pathologically long chain) data — not a normal limit in practice.
 
+/** One point along a chain's painted path — see generateChainRibbons and
+ * stroke-mesh.ts's ribbon renderer. Rendered as a single connected strip mesh per chain
+ * (adjacent points share actual geometry) instead of independent quad-per-dab instances,
+ * which is what let the previous approach's dab boundaries show as a visible seam no matter
+ * how the texture/overlap parameters around them were tuned (see docs/work/pose-pipeline.md
+ * Round 12 for the diagnosis — width mismatch, texture phase, height-overlap, and edge wobble
+ * were each ruled out one at a time; the actual cause was two independently-rendered
+ * primitives meeting at a boundary at all, which a connected mesh has none of, by
+ * construction). */
+export interface RibbonPoint {
+  position: [number, number, number];
+  /** World-space width at this exact point — the taper the ribbon builder interpolates
+   * BETWEEN, so (unlike the old per-dab flat width) there is only ever one width value at any
+   * given point on the path, shared by construction between the segment ending there and the
+   * one starting there. */
+  width: number;
+  /** True arc-length distance from the chain's start — feeds stroke-mesh.ts's tear/bristle/
+   * facet/lump texture patterns, same purpose as the old Stroke.chainOffset. */
+  arcLength: number;
+  volume: number;
+}
+
+export interface Ribbon {
+  points: RibbonPoint[];
+  color: [number, number, number];
+  /** Per-chain, not per-point — see the old chainSeed doc comment in the previous version of
+   * this module for why a fresh seed per point would reopen the same seam problem. */
+  seed: number;
+}
+
 /**
  * Walks each CHAIN (a whole unbranched limb — e.g. hip to toe, or shoulder to wrist; see
  * skeleton.ts buildChains) from its start joint to its end joint as one continuous traveling
- * brush, laying down dabs of paint along the way — "connect the dots" in the sense of tracing
- * the limb's own shape, not stamping each bone independently.
+ * brush, producing a sequence of path points that stroke-mesh.ts connects into a single
+ * ribbon mesh — "connect the dots" in the sense of tracing the limb's own shape as one
+ * physically continuous form, not stamping each bone, or even each dab, independently.
  *
- * The brush is a genuine seeking agent, not a formula sampled independently at each dab: it
- * has a current position (wherever the previous dab actually left it) and a target (the next
- * joint along the chain), and every dab's heading is "straight at the target," bent by that
+ * The brush is a genuine seeking agent, not a formula sampled independently at each step: it
+ * has a current position (wherever the previous step actually left it) and a target (the next
+ * joint along the chain), and every step's heading is "straight at the target," bent by that
  * point's own instantaneous SIDEWAYS velocity (capped at maxWaverBlend) — the "impulse from
  * the bones applies force... in the direction they're moving" the brief asked for, but
  * happening WITHIN the confines of the brush's own intent to reach the joint, not replacing
@@ -122,7 +141,7 @@ const MAX_DABS_PER_CHAIN_SAFETY = 40; // guards against a runaway loop on degene
  * position from scratch each time, is what makes contiguity hold under motion instead of only
  * at rest.
  *
- * Sideways velocity is still sampled fresh per-dab at (an estimate of) the brush's own
+ * Sideways velocity is still sampled fresh per-step at (an estimate of) the brush's own
  * position, not one velocity averaged across a whole bone or chain (see
  * docs/work/pose-pipeline.md Round 3) — a rotating limb's tip and base still move
  * differently, that part of the diagnosis was correct. See docs/work/pose-pipeline.md
@@ -131,38 +150,28 @@ const MAX_DABS_PER_CHAIN_SAFETY = 40; // guards against a runaway loop on degene
  * Needs cache/frame access to sample arbitrary points adaptively as the walk proceeds, so
  * (unlike the rest of this module) it isn't a pure data transform over pre-computed samples.
  */
-export function generateChainStrokes(
+export function generateChainRibbons(
   cache: PoseCache,
   chains: Chain[],
   dancerIndex: number,
   frame: number,
   style: BoneStrokeStyle,
-  /** Optional — when passed, one entry is pushed per dab as it's computed. Powers the debug
-   * overlay (see debug/overlay.ts): the real walk's own data, not a re-derived approximation,
-   * so the overlay can never show something the actual generator didn't do. undefined in the
-   * normal (non-debug) render path costs nothing beyond the one branch per dab. */
+  /** Optional — when passed, one entry is pushed per walk step as it's computed. Powers the
+   * debug overlay (see debug/overlay.ts): the real walk's own data, not a re-derived
+   * approximation, so the overlay can never show something the actual generator didn't do.
+   * undefined in the normal (non-debug) render path costs nothing beyond the one branch. */
   debugOut?: ChainDebugDab[]
-): Stroke[] {
-  const strokes: Stroke[] = [];
+): Ribbon[] {
+  const ribbons: Ribbon[] = [];
 
   chains.forEach((chain, chainIndex) => {
-    // Collected first, capStart/capEnd assigned after the fact — only the very first and
-    // very last dab of the WHOLE chain are true brush-lift endpoints; every dab in between is
-    // an interior seam and must not taper (see the Stroke.capStart/capEnd doc comment).
-    const chainDabs: Omit<Stroke, "capStart" | "capEnd">[] = [];
-
     let brushPos = jointWorldPosition(cache, dancerIndex, frame, chain.jointPath[0]);
     // Runs across the WHOLE chain, not reset per bone — keeps paint-load identity, and
-    // therefore the visible dab pattern, continuous as the brush crosses joints.
-    let dabSlot = 0;
-    // True arc-length distance walked from the chain's start — feeds each dab's chainOffset
-    // (see the Stroke.chainOffset doc comment), which is what lets stroke-mesh.ts's texture
-    // read as one continuous limb instead of a chain of independently-phased dabs.
-    let chainOffset = 0;
-    // Constant for every dab in this chain (not per-dab) so neighboring dabs' bristle/facet/
-    // lump patterns share the same phase offset and only their now-continuous chainOffset
-    // coordinate distinguishes them — a per-dab seed here would recreate the exact seam
-    // problem chainOffset is meant to fix, just shifted into the seed term instead of along.
+    // therefore the visible step-length pattern, continuous as the brush crosses joints.
+    let stepSlot = 0;
+    // Constant for every point in this chain (not per-point) so the whole ribbon's bristle/
+    // facet/lump texture phase is consistent — only arcLength (below) varies it along the
+    // length, which is what makes it read continuous instead of restarting anywhere.
     const chainSeed = chainIndex * 0.6180339887;
 
     // Width at each JOINT, not each bone — a real limb narrows continuously along its length,
@@ -176,7 +185,12 @@ export function generateChainStrokes(
       return (chain.thickness[i - 1] + chain.thickness[i]) / 2;
     });
 
-    for (let segIndex = 0; segIndex < chain.jointPath.length - 1 && dabSlot < MAX_DABS_PER_CHAIN_SAFETY; segIndex++) {
+    let arcLength = 0;
+    const points: RibbonPoint[] = [
+      { position: brushPos, width: jointThickness[0] * style.widthScale, arcLength: 0, volume: 0.15 },
+    ];
+
+    for (let segIndex = 0; segIndex < chain.jointPath.length - 1 && stepSlot < MAX_DABS_PER_CHAIN_SAFETY; segIndex++) {
       const parentIndex = chain.jointPath[segIndex];
       const childIndex = chain.jointPath[segIndex + 1];
 
@@ -190,14 +204,14 @@ export function generateChainStrokes(
       const segLen = Math.hypot(segVec[0], segVec[1], segVec[2]);
       // Rig stub joints (zero-offset rotation pivots, e.g. BVH's "Neck"/"LHipJoint") have no
       // real length and nothing to paint — pass straight through to the next bone in the
-      // chain rather than emitting a degenerate zero-length dab.
+      // chain rather than emitting a degenerate zero-length step.
       if (segLen < 0.05) {
         brushPos = targetPos;
         continue;
       }
       const segDir: [number, number, number] = [segVec[0] / segLen, segVec[1] / segLen, segVec[2] / segLen];
 
-      while (dabSlot < MAX_DABS_PER_CHAIN_SAFETY) {
+      while (stepSlot < MAX_DABS_PER_CHAIN_SAFETY) {
         const toTarget: [number, number, number] = [
           targetPos[0] - brushPos[0],
           targetPos[1] - brushPos[1],
@@ -219,12 +233,11 @@ export function generateChainStrokes(
         // spatially projecting the brush's (possibly drifted) actual position. A spatial
         // projection saturates at 0/1 once the brush drifts off the bone's straight line,
         // which locks velocity sampling onto a CONSTANT value every subsequent step instead
-        // of it varying as the walk proceeds — a fixed bias repeated over many dabs is exactly
-        // what turns a wobble into a runaway straight-line excursion.
+        // of it varying as the walk proceeds — a fixed bias repeated over many steps is
+        // exactly what turns a wobble into a runaway straight-line excursion.
         const t = Math.max(0, Math.min(1, 1 - distToTarget / segLen));
         const { velocity } = sampleBoneAtT(cache, parentIndex, childIndex, dancerIndex, frame, t);
         const speed = Math.hypot(velocity[0], velocity[1], velocity[2]);
-        const thickness = jointThickness[segIndex] * (1 - t) + jointThickness[segIndex + 1] * t;
 
         // Split velocity into "along the bone" (irrelevant — the walk already has its own
         // travel direction) and "across the bone" (a rotating limb's actual visible motion
@@ -252,14 +265,15 @@ export function generateChainStrokes(
           headingRaw[2] / headingLen,
         ];
 
-        const identity = chainIndex * 733 + dabSlot * 7 + 0.5;
-        // How much paint this dab picked up, 0..1 — drives both how far it can carry (length)
-        // and, scaled by pressureVariance, how thick/voluminous it lays down. One random draw
-        // for both, since physically they're the same thing: more paint on the brush means it
-        // both goes further AND deposits more material, not two independent coincidences.
+        const identity = chainIndex * 733 + stepSlot * 7 + 0.5;
+        // How much paint the brush picked up for this step, 0..1 — drives both how far it
+        // can carry (length) and, scaled by pressureVariance, how much material it deposits
+        // (volume). One random draw for both, since physically they're the same thing: more
+        // paint on the brush means it both goes further AND deposits more material, not two
+        // independent coincidences.
         const paintLoad = hash(identity);
 
-        // Never overshoot the target in one dab — clamping to distToTarget is what lets the
+        // Never overshoot the target in one step — clamping to distToTarget is what lets the
         // walk hand off cleanly to the next joint/segment instead of blowing past it.
         const baseLength = style.minStrokeLength + paintLoad * (style.maxStrokeLength - style.minStrokeLength);
         const stepLength = Math.min(distToTarget, Math.min(style.maxStrokeLength, baseLength * (1 + speed * style.smearScale)));
@@ -269,64 +283,36 @@ export function generateChainStrokes(
           brushPos[1] + heading[1] * stepLength,
           brushPos[2] + heading[2] * stepLength,
         ];
-        const dabCenter: [number, number, number] = [
-          (brushPos[0] + newPos[0]) / 2,
-          (brushPos[1] + newPos[1]) / 2,
-          (brushPos[2] + newPos[2]) / 2,
-        ];
 
         if (debugOut) {
           debugOut.push({ chainIndex, start: brushPos, end: newPos, rawVelocity: velocity });
         }
 
-        // A deliberate overlap here (tried at 1.35x) turned out to be actively harmful: the
-        // height field accumulates ADDITIVELY across overlapping instances with no
-        // coverage-normalization (unlike color, which divides by alpha — see
-        // shading-pass.ts), so any overlap between two dabs doubles their paint HEIGHT in the
-        // overlap zone, creating a real bump at every dab boundary regardless of texture
-        // tuning. That bump — not mismatched per-dab texture — was the dominant cause of the
-        // "beaded chain" look. Texture continuity across the seam is now handled by
-        // chainOffset (a continuous coordinate, see the Stroke.chainOffset doc comment), so
-        // dabs can go back to abutting almost exactly without reopening the seam problem the
-        // overlap was originally trying to solve.
-        const renderLength = Math.max(0.15, stepLength * style.lengthScale * 1.03);
+        const tEnd = Math.max(0, Math.min(1, 1 - (distToTarget - stepLength) / segLen));
+        const width = (jointThickness[segIndex] * (1 - tEnd) + jointThickness[segIndex + 1] * tEnd) * style.widthScale;
         const pressure = 1 + style.pressureVariance * (paintLoad * 2 - 1);
-        // The quad's leading (u=0) edge sits half the overlap-inflated render length behind
-        // the dab's true center — see the Stroke.chainOffset doc comment for why this needs
-        // to be a continuous chain-arc-length coordinate rather than resetting per dab.
-        const quadStartOffset = chainOffset - (renderLength - stepLength) / 2;
 
-        chainDabs.push({
-          position: dabCenter,
-          velocity: heading,
-          length: renderLength,
-          // Width is driven ONLY by the smooth per-joint taper (jointThickness), never by
-          // per-dab pressure — a limb's actual silhouette doesn't pulse wider/narrower every
-          // few world-units. Letting paintLoad/pressure swing width independently per dab is
-          // what turned a smoothly-tapering limb into a chain of alternating-width beads
-          // (each width step reads as a knuckle). Paint unevenness still shows: pressure
-          // still scales volume (a dab lays down more/less material without changing the
-          // outline it paints), and the shader's own bristle/facet/grain patterns already vary
-          // richness along the stroke.
-          width: thickness * style.widthScale,
-          volume: (0.15 + speed * style.volumeScale) * pressure,
-          color: style.color,
-          seed: chainSeed,
-          chainOffset: quadStartOffset,
-        });
+        arcLength += stepLength;
+        points.push({ position: newPos, width, arcLength, volume: (0.15 + speed * style.volumeScale) * pressure });
 
         brushPos = newPos;
-        chainOffset += stepLength;
-        dabSlot++;
+        stepSlot++;
       }
     }
 
-    chainDabs.forEach((dab, i) => {
-      strokes.push({ ...dab, capStart: i === 0, capEnd: i === chainDabs.length - 1 });
-    });
+    // A single point (chain start only, e.g. every segment was a zero-length stub) has
+    // nothing to connect into a ribbon.
+    if (points.length < 2) return;
+
+    // Soft taper at the true ends of the chain, so the ribbon reads as a brush lifting off
+    // rather than a hard-cut stub — a rounded/tapered tip instead of a flat blunt end.
+    points[0].width *= 0.35;
+    points[points.length - 1].width *= 0.35;
+
+    ribbons.push({ points, color: style.color, seed: chainSeed });
   });
 
-  return strokes;
+  return ribbons;
 }
 
 export interface SpeckleStyle {
@@ -380,9 +366,6 @@ export function generateSpeckles(emitters: Emitter[], frame: number, style: Spec
         volume: 0.04 + r1 * 0.06,
         color: style.color,
         seed,
-        chainOffset: 0,
-        capStart: true,
-        capEnd: true,
       });
     }
   });

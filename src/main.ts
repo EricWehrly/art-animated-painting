@@ -8,14 +8,15 @@ import { loadPoseCache } from "./pose/pose-cache";
 import { boneSegments, buildChains } from "./pose/skeleton";
 import { generateEmitters } from "./pose/emitters";
 import {
-  generateChainStrokes,
+  generateChainRibbons,
   generateSpeckles,
   type Stroke,
+  type Ribbon,
   type BoneStrokeStyle,
   type SpeckleStyle,
   type ChainDebugDab,
 } from "./pose/strokes";
-import { createStrokeMesh } from "./paint/stroke-mesh";
+import { createStrokeMesh, createRibbonMesh } from "./paint/stroke-mesh";
 import { createHeightPass } from "./paint/height-pass";
 import { createShadingPass } from "./paint/shading-pass";
 import { createDebugOverlay, type DebugDancerData } from "./debug/overlay";
@@ -34,30 +35,39 @@ async function main() {
   const pane = createParamsPanel(app, params);
 
   const cache = await loadPoseCache("/data");
-  // Main strokes walk whole CHAINS (a whole limb, e.g. hip-to-toe or shoulder-to-wrist) as one
-  // continuous traveling brush — see generateChainStrokes in pose/strokes.ts and buildChains
-  // in pose/skeleton.ts. `bones` (the old per-bone list) is kept only for speckle placement,
-  // which still wants independent per-bone velocity sampling, not chain-level coverage.
+  // Main figure strokes walk whole CHAINS (a whole limb, e.g. hip-to-toe or shoulder-to-wrist)
+  // as one continuous traveling brush and render as a single connected ribbon mesh per chain
+  // — see generateChainRibbons in pose/strokes.ts, buildChains in pose/skeleton.ts, and
+  // paint/stroke-mesh.ts's ribbon renderer. `bones` (the old per-bone list) is kept only for
+  // speckle placement, which still wants independent per-bone velocity sampling, not
+  // chain-level coverage. Speckles themselves stay on the older instanced-dab path (they're
+  // standalone marks, not a connected shape, so there's no seam for the ribbon approach to
+  // need to solve).
   const bones = boneSegments(cache.header.joints);
   const chains = buildChains(cache.header.joints);
   const frameCount = cache.header.frameCount;
   timeline.setFrameCount(frameCount);
 
-  // A long chain (leg: hip to toe, ~19 world units) at minimum paint load could in principle
-  // need ~32 dabs at the style values below; this matches generateChainStrokes's own
-  // MAX_DABS_PER_CHAIN_SAFETY hard cap, so the buffer is always big enough regardless of how
-  // the style values get tuned. Speckles still sample several fixed points per bone since
-  // they want the velocity spread along a rotating limb, not coverage.
-  const maxDabsPerChainBudget = 40;
   const speckleSamplesPerBone = 3;
   const speckleMaxCount = 6;
-  const mainStrokesTotal = chains.length * maxDabsPerChainBudget * cache.header.dancers.length;
   const speckleEmittersTotal = bones.length * speckleSamplesPerBone * cache.header.dancers.length;
-  // Generous headroom for speckles on top of the main strokes — setStrokes() silently caps
-  // at this budget, so this only needs to comfortably cover the worst case, not be exact.
-  const maxStrokes = mainStrokesTotal + speckleEmittersTotal * speckleMaxCount * 2;
+  // Generous headroom — setStrokes() silently caps at this budget, so this only needs to
+  // comfortably cover the worst case speckle count, not be exact.
+  const maxStrokes = speckleEmittersTotal * speckleMaxCount * 2;
 
   const strokeMesh = createStrokeMesh(maxStrokes);
+  // The camera's viewing angle is a fixed, build-time constant (see shell/canvas.ts) — the
+  // ribbon mesh uses that to compute each point's sideways (width) axis once on the CPU
+  // instead of needing per-vertex view-space billboarding in a shader.
+  const ribbonViewForward = CAMERA_HOME_TARGET.clone().sub(CAMERA_HOME_POSITION).normalize();
+  const ribbonMesh = createRibbonMesh(ribbonViewForward);
+  // heightPass.render() clears its targets before drawing, so combining both meshes into one
+  // call (via these groups) is what lets speckles and ribbons land in the SAME accumulated
+  // frame — calling render() twice would have the second call's clear erase the first.
+  const colorGroup = new THREE.Group();
+  colorGroup.add(strokeMesh.colorMesh, ribbonMesh.colorMesh);
+  const heightGroup = new THREE.Group();
+  heightGroup.add(strokeMesh.heightMesh, ribbonMesh.heightMesh);
   const heightPass = createHeightPass(domElement.width, domElement.height);
   const shadingPass = createShadingPass();
   const debugOverlay = createDebugOverlay();
@@ -143,6 +153,7 @@ async function main() {
 
   function renderFrame(frame: number) {
     const allStrokes: Stroke[] = [];
+    const allRibbons: Ribbon[] = [];
     const debugDancers: DebugDancerData[] = [];
     for (let dancerIndex = 0; dancerIndex < cache.header.dancers.length; dancerIndex++) {
       // -1 = both dancers (default). Isolating one dancer removes the other from the canvas
@@ -150,7 +161,7 @@ async function main() {
       // single body hard to read (see the frame-68 case).
       if (params.soloDancer !== -1 && dancerIndex !== params.soloDancer) continue;
       const debugDabs: ChainDebugDab[] | undefined = params.debugMode ? [] : undefined;
-      allStrokes.push(...generateChainStrokes(cache, chains, dancerIndex, frame, strokeStyleFor(dancerIndex), debugDabs));
+      allRibbons.push(...generateChainRibbons(cache, chains, dancerIndex, frame, strokeStyleFor(dancerIndex), debugDabs));
       if (debugDabs) debugDancers.push({ dancerIndex, debugDabs });
       // Speckles are a fling/spatter effect from motion — meaningless (and distracting from
       // the base figure) in calm calibration mode.
@@ -160,8 +171,9 @@ async function main() {
       }
     }
     strokeMesh.setStrokes(allStrokes);
+    ribbonMesh.setRibbons(allRibbons);
 
-    heightPass.render(renderer, strokeMesh.colorMesh, strokeMesh.heightMesh, camera);
+    heightPass.render(renderer, colorGroup, heightGroup, camera);
     shadingPass.setReliefStrength(params.reliefStrength);
     shadingPass.render(renderer, heightPass.colorSumTexture, heightPass.heightSumTexture);
 

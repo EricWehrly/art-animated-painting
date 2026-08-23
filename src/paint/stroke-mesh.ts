@@ -1,7 +1,16 @@
 import * as THREE from "three";
-import type { Stroke } from "../pose/strokes";
+import type { Stroke, Ribbon } from "../pose/strokes";
 
-const strokeVertexShader = /* glsl */ `
+// ---------------------------------------------------------------------------------------
+// Instanced dabs — standalone paint marks (speckles, the swatch calibration page). Each is
+// a single independent billboard quad, always tapered/capped at both ends. The main figure's
+// limbs do NOT use this path — see the ribbon renderer below and docs/work/pose-pipeline.md
+// Round 12 for why: placing many of these end-to-end to build a limb left a visible seam at
+// every dab boundary no matter how the shared shape parameters were tuned, because the seam
+// was between two independently-rendered primitives, not a texture/tuning problem.
+// ---------------------------------------------------------------------------------------
+
+const dabVertexShader = /* glsl */ `
   precision highp float;
 
   // "position" (base quad corner, x/y in [-0.5, 0.5]), modelViewMatrix and projectionMatrix
@@ -13,19 +22,12 @@ const strokeVertexShader = /* glsl */ `
   in float iVolume;
   in vec3 iColor;
   in float iSeed;
-  in float iChainOffset;
-  in float iCapStart;
-  in float iCapEnd;
 
   out vec2 vUv;
   out vec3 vColor;
   out float vVolume;
   out float vSeed;
   out float vWidth;
-  out float vLength;
-  out float vChainOffset;
-  out float vCapStart;
-  out float vCapEnd;
 
   void main() {
     vec3 viewCenter = (modelViewMatrix * vec4(iCenter, 1.0)).xyz;
@@ -46,134 +48,60 @@ const strokeVertexShader = /* glsl */ `
     vVolume = iVolume;
     vSeed = iSeed;
     vWidth = iWidth;
-    vLength = iLength;
-    vChainOffset = iChainOffset;
-    vCapStart = iCapStart;
-    vCapEnd = iCapEnd;
   }
 `;
 
-// Shared by both fragment shaders below — computes alpha (coverage) and heightProfile
-// (the paint's cross-section shape) identically either way, so the color pass and the
-// height pass always agree on where a stroke actually is.
-const strokeShapeGLSL = /* glsl */ `
+// Shared by both dab fragment shaders below — computes alpha (coverage) and heightProfile
+// (the paint's cross-section shape) identically either way, so the color pass and the height
+// pass always agree on where a dab actually is. A standalone dab is ALWAYS capped at both
+// ends (it's never part of a chain), so — unlike the ribbon shape logic below — the tip taper
+// here is unconditional.
+const dabShapeGLSL = /* glsl */ `
   float across = abs(vUv.y - 0.5) * 2.0; // 0 at center, 1 at edge
-  float along = vUv.x; // 0..1 along THIS dab — only valid for the cap taper below, which
-  // legitimately needs to know "am I near this dab's own start/end," not the limb's.
-
-  // World-space distance along the whole CHAIN (not reset per dab) — drives every texture
-  // pattern below (tear/bristle/facet/lump) instead of 'along', so a chain of touching dabs
-  // reads as one continuously-textured limb rather than each dab restarting its own pattern
-  // at 0 and visibly seaming against its neighbor. See pose/strokes.ts Stroke.chainOffset.
-  float alongChain = vChainOffset + vUv.x * vLength;
+  float along = vUv.x; // 0..1 along the whole dab
 
   // A perfectly smooth-sided stroke reads as a mechanical decal — real paint applied with a
   // loaded brush or knife tears unevenly along its edge instead of stopping on a clean line.
-  // Low-frequency wobble (a handful of bumps along the stroke's length, not per-pixel noise,
-  // which would just alias into static) perturbs where the width falloff starts.
-  float tearPhase = alongChain * 9.0 + vSeed * 13.0;
+  float tearPhase = along * 9.0 + vSeed * 13.0;
   float tear = sin(tearPhase) * 0.5 + sin(tearPhase * 2.3 + vSeed * 5.0) * 0.3;
   float edgeStart = clamp(0.5 + 0.16 * tear, 0.15, 0.7);
   float widthMask = 1.0 - smoothstep(edgeStart, edgeStart + 0.38, across);
 
-  // Same idea applied to the tip/tail so the stroke's ends look dragged/lifted-off rather
-  // than perfectly rounded caps — but ONLY at a true endpoint of a brush pass (vCapStart/
-  // vCapEnd, set per-instance in pose/strokes.ts). An interior seam between two dabs that are
-  // actually continuing the same chain must stay at full coverage right to its edge, or a
-  // chain of touching dabs pinches closed at every join and reads as a beaded/dashed line
-  // instead of one continuous painted limb — see docs/work/pose-pipeline.md Round 6.
+  // Tip/tail look dragged/lifted-off rather than a perfectly rounded cap — always applied,
+  // since a standalone dab is always a real beginning/end of a brush touch.
   float capTear = 0.5 + 0.5 * sin(vUv.y * 7.0 + vSeed * 9.0);
   float tearCapStart = mix(0.0, 0.05, capTear);
   float tearCapEnd = mix(0.84, 0.94, capTear);
-  float startFade = vCapStart > 0.5 ? smoothstep(tearCapStart, tearCapStart + 0.1, along) : 1.0;
-  float endFade = vCapEnd > 0.5 ? (1.0 - smoothstep(tearCapEnd, tearCapEnd + 0.08, along)) : 1.0;
+  float startFade = smoothstep(tearCapStart, tearCapStart + 0.1, along);
+  float endFade = 1.0 - smoothstep(tearCapEnd, tearCapEnd + 0.08, along);
   float endCap = startFade * endFade;
 
-  // Bristle ridges at a fixed WORLD-space spacing (not a fixed count across the UV range) —
-  // a fixed cycle count aliased badly on narrow strokes, which is what read as "pixelly":
-  // dozens of ridge cycles were being crammed into a couple of screen pixels. Two
-  // frequencies beating against each other (not one clean sine) break the perfectly regular
-  // "barcode" look a single frequency gives — real bristle spacing isn't uniform. Widened
-  // from the original 0.18 to give fewer, broader facets — reference photos show chunky
-  // knife-daub planes catching light distinctly, not fine parallel hatching.
   float ridgeSpacing = 0.42;
   float cycles = min(vWidth / ridgeSpacing, 40.0);
   float wave1 = vUv.y * cycles * 6.28318 + sin(vUv.x * 6.28318 + vSeed * 3.0) * 0.6 + vSeed * 11.0;
   float wave2 = vUv.y * cycles * 1.7 * 6.28318 + vSeed * 7.0;
   float rawBristle = 0.5 + 0.35 * sin(wave1) + 0.15 * sin(wave2);
 
-  // Fade the ridge pattern out once its on-screen frequency exceeds what this pixel can
-  // resolve (screen-space derivative of the phase), instead of letting it alias into noise.
   float phaseDeriv = fwidth(wave1);
   float bristleAmp = clamp(1.0 - phaseDeriv / 3.14159, 0.0, 1.0);
 
-  // Chop the stroke into a few blocky facets along its length (2-3 cells, a hard per-cell
-  // step, not a smooth gradient) instead of letting the ridge pattern run continuously end to
-  // end — the ridge pattern alone still reads as combed hatching lines; this is what actually
-  // breaks a stroke into a few distinct overlapping daubs, each with its own coverage/pigment/
-  // height level, the way a loaded brush or knife deposits paint in separate touches rather
-  // than one continuous stripe.
-  float facetCell = floor(alongChain * 2.6 + vSeed * 8.0);
+  float facetCell = floor(along * 2.6 + vSeed * 8.0);
   float facetHash = fract(sin(facetCell * 12.9898 + vSeed * 78.233) * 43758.5453);
   float facetShade = 0.6 + 0.4 * facetHash;
 
   float bristle = mix(1.0, rawBristle, 0.6 * bristleAmp) * mix(1.0, facetShade, 0.55);
 
-  // alpha (COVERAGE — is paint here at all) must NOT be modulated by bristle/facetShade. That
-  // was fine on a single wide calibration stroke, where a facet is a small patch of a much
-  // bigger painted area — but on a whole limb built from many touching dabs, a low-facet cell
-  // dropping alpha toward 0 reads as an actual hole in the paint, and a periodic run of them
-  // (facet cells are a fixed world-size, so a short dab can BE one cell) reads as a chain of
-  // separate beads with gaps between, exactly the "joint-heavy" look this was meant to avoid.
-  // Richness/texture still comes through — bristle still modulates pigment (colorFragmentShader)
-  // and height (heightProfile below) — it just can't punch holes in the shape's own coverage.
   float alpha = clamp(widthMask * endCap, 0.0, 1.0);
   if (alpha < 0.02) discard;
 
-  // Height gets its OWN cross-section shape, separate from alpha's coverage mask. alpha's
-  // widthMask is a near-flat plateau (opaque paint covers most of a stroke's width
-  // uniformly) — using that for height too was the main reason strokes rendered as flat
-  // colored ribbons with no visible 3D curvature: there was no broad surface for a normal to
-  // curve across, only the fine bristle ripples, which read as thin mechanical stripes with
-  // nothing underneath them. A cosine dome gives every stroke a real rounded ridge — the
-  // single highest-impact change for making this look like a bead of paint, not a flat
-  // decal. Along-length undulation (so the ridge crest isn't perfectly straight) comes from
-  // 'lump', below.
   float crown = cos(clamp(across, 0.0, 1.0) * 1.5707963);
-
-  // A perfectly smooth dome only ever produces ONE continuous specular highlight running
-  // straight down its centerline, no matter how the light is tuned — every point along that
-  // line shares the same normal direction. That single glowing line is exactly what read as
-  // a glass/neon tube rather than paint: real impasto has no single normal direction, it has
-  // hundreds of small ridge-top facets each catching the light differently, so highlights
-  // scatter into glints instead of tracing one smooth curve. Bake the SAME bristle ridge
-  // pattern already used for alpha/color into the height itself (not just a color tint) so
-  // central-difference normals actually see that ridge structure.
   float ridgeHeight = (rawBristle - 0.5) * bristleAmp;
-
-  // A second, much coarser two-frequency lump (a couple of piled bumps per stroke, not a
-  // uniform tube) breaks the dome's cross-section symmetry the way a loaded brush or palette
-  // knife actually deposits paint unevenly along a stroke, rather than extruding one constant
-  // profile. Amplitude cut from the original +-0.22 (0.56..1.0): tried gating this by width on
-  // the theory that a thin limb stroke made a fixed-frequency bump read as its own blob while
-  // a wide calibration stroke absorbed the same bump as texture — but the banding turned out
-  // just as strong on the WIDE bones (spine, hip) as the thin ones, so width was never the
-  // actual variable. The bump frequency (2*pi/5 ~= 1.26 world units) is just close enough to a
-  // single dab's own length that, at the original amplitude, every hump independently reads as
-  // a bead regardless of what it's sitting on. A gentler amplitude keeps the undulation (still
-  // not a perfectly uniform tube) without each cycle punching a dark ring hard enough to read
-  // as a joint.
-  float lumpPhase = alongChain * 5.0 + vSeed * 17.0;
+  float lumpPhase = along * 5.0 + vSeed * 17.0;
   float lump = 0.9 + 0.1 * sin(lumpPhase) * sin(lumpPhase * 0.63 + vSeed * 4.0);
-
-  // Same facet chunking as alpha/color, folded into height too — a lightly-loaded facet
-  // should sit measurably lower than a heavily-loaded one, not just look thinner in color
-  // while remaining exactly as tall. Mix weight also cut (0.5 -> 0.2) for the same reason as
-  // 'lump' above.
   float heightProfile = endCap * crown * (lump * mix(1.0, facetShade, 0.2) + ridgeHeight * 0.35);
 `;
 
-const colorFragmentShader = /* glsl */ `
+const dabColorFragmentShader = /* glsl */ `
   precision highp float;
 
   in vec2 vUv;
@@ -181,35 +109,22 @@ const colorFragmentShader = /* glsl */ `
   in float vVolume;
   in float vSeed;
   in float vWidth;
-  in float vLength;
-  in float vChainOffset;
-  in float vCapStart;
-  in float vCapEnd;
 
   out vec4 outColor;
 
   void main() {
-    ${strokeShapeGLSL}
+    ${dabShapeGLSL}
 
-    // A single flat color per stroke, varying only in coverage, is what read as "screen
-    // color" instead of paint — real pigment varies hair to hair. Reuse the bristle ridge
-    // pattern (ridge tops = more pigment loaded = brighter/richer; valleys = thinner) plus
-    // an independent fine-grain hash (per-hair jitter, decorrelated from the ridge geometry
-    // so it doesn't just look like the same pattern twice) to modulate value and saturation.
     float grainHash = fract(sin(dot(vUv * vec2(311.7, 191.3) + vSeed, vec2(12.9898, 78.233))) * 43758.5453);
     float grain = (grainHash - 0.5) * 0.22;
     float pigmentLoad = mix(0.8, 1.2, bristle) + grain;
     vec3 tintedColor = clamp(vColor * pigmentLoad, 0.0, 1.5);
 
-    // Coverage-weighted additive accumulation: color accumulates under ADDITIVE blending
-    // (see docs/work/impasto-shading.md status notes) — the composite pass divides
-    // color-sum by coverage-sum to recover an averaged color. Same pattern
-    // paint-accumulator will reuse for decay + splat.
     outColor = vec4(tintedColor * alpha, alpha);
   }
 `;
 
-const heightFragmentShader = /* glsl */ `
+const dabHeightFragmentShader = /* glsl */ `
   precision highp float;
 
   in vec2 vUv;
@@ -217,24 +132,15 @@ const heightFragmentShader = /* glsl */ `
   in float vVolume;
   in float vSeed;
   in float vWidth;
-  in float vLength;
-  in float vChainOffset;
-  in float vCapStart;
-  in float vCapEnd;
 
   out vec4 outColor;
 
   void main() {
-    ${strokeShapeGLSL}
+    ${dabShapeGLSL}
 
-    // Alpha MUST be nonzero, even though nothing ever reads it back (the shading pass only
-    // samples .r of this target). Writing alpha=0 here — into an additively-blended
-    // half-float render target — silently zeroed the RGB channels too on this environment's
-    // WebGL2/ANGLE build. Confirmed by isolating every other variable (one MRT target vs.
-    // two separate targets, geometry shared vs. independent between the color/height
-    // meshes, vertex shader source shared vs. textually distinct, varyings as separate
-    // floats vs. packed into one vector) and finding none of them mattered except this one
-    // line. If you're tempted to "clean up" this alpha value, don't.
+    // Alpha MUST be nonzero — see docs/work/pose-pipeline.md; a zero-alpha write into this
+    // additively-blended half-float target silently zeroes the RGB channels too on this
+    // environment's WebGL2/ANGLE build.
     outColor = vec4(heightProfile * vVolume, 0.0, 0.0, 1.0);
   }
 `;
@@ -258,9 +164,6 @@ interface InstancedAttrs {
   iVolume: THREE.InstancedBufferAttribute;
   iColor: THREE.InstancedBufferAttribute;
   iSeed: THREE.InstancedBufferAttribute;
-  iChainOffset: THREE.InstancedBufferAttribute;
-  iCapStart: THREE.InstancedBufferAttribute;
-  iCapEnd: THREE.InstancedBufferAttribute;
 }
 
 function createInstancedGeometry(maxInstances: number): InstancedAttrs {
@@ -275,26 +178,12 @@ function createInstancedGeometry(maxInstances: number): InstancedAttrs {
   const iVolume = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances), 1);
   const iColor = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances * 3), 3);
   const iSeed = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances), 1);
-  const iChainOffset = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances), 1);
-  const iCapStart = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances), 1);
-  const iCapEnd = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances), 1);
-  for (const [name, attr] of Object.entries({
-    iCenter,
-    iVelocity,
-    iWidth,
-    iLength,
-    iVolume,
-    iColor,
-    iSeed,
-    iChainOffset,
-    iCapStart,
-    iCapEnd,
-  })) {
+  for (const [name, attr] of Object.entries({ iCenter, iVelocity, iWidth, iLength, iVolume, iColor, iSeed })) {
     attr.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute(name, attr);
   }
 
-  return { geometry, iCenter, iVelocity, iWidth, iLength, iVolume, iColor, iSeed, iChainOffset, iCapStart, iCapEnd };
+  return { geometry, iCenter, iVelocity, iWidth, iLength, iVolume, iColor, iSeed };
 }
 
 function writeStrokes(attrs: InstancedAttrs, strokes: Stroke[], maxInstances: number) {
@@ -303,14 +192,11 @@ function writeStrokes(attrs: InstancedAttrs, strokes: Stroke[], maxInstances: nu
     const s = strokes[i];
     attrs.iCenter.setXYZ(i, s.position[0], s.position[1], s.position[2]);
     attrs.iVelocity.setXYZ(i, s.velocity[0], s.velocity[1], s.velocity[2]);
-    attrs.iCapStart.setX(i, s.capStart ? 1 : 0);
-    attrs.iCapEnd.setX(i, s.capEnd ? 1 : 0);
     attrs.iWidth.setX(i, s.width);
     attrs.iLength.setX(i, s.length);
     attrs.iVolume.setX(i, s.volume);
     attrs.iColor.setXYZ(i, s.color[0], s.color[1], s.color[2]);
     attrs.iSeed.setX(i, s.seed);
-    attrs.iChainOffset.setX(i, s.chainOffset);
   }
   attrs.geometry.instanceCount = n;
   attrs.iCenter.needsUpdate = true;
@@ -320,15 +206,12 @@ function writeStrokes(attrs: InstancedAttrs, strokes: Stroke[], maxInstances: nu
   attrs.iVolume.needsUpdate = true;
   attrs.iColor.needsUpdate = true;
   attrs.iSeed.needsUpdate = true;
-  attrs.iChainOffset.needsUpdate = true;
-  attrs.iCapStart.needsUpdate = true;
-  attrs.iCapEnd.needsUpdate = true;
 }
 
-function makeStrokeMaterial(fragmentShader: string): THREE.ShaderMaterial {
+function makeDabMaterial(fragmentShader: string): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
     glslVersion: THREE.GLSL3,
-    vertexShader: strokeVertexShader,
+    vertexShader: dabVertexShader,
     fragmentShader,
     blending: THREE.AdditiveBlending,
     depthTest: false,
@@ -339,19 +222,16 @@ function makeStrokeMaterial(fragmentShader: string): THREE.ShaderMaterial {
 
 /**
  * Instanced billboard quads, one per stroke, oriented along each stroke's velocity in view
- * space and textured with a procedural bristle-streak alpha. The color mesh and height mesh
- * each own an independent InstancedBufferGeometry, fed identical per-instance data from a
- * single `setStrokes` call — cheap at this instance count, and it means changing one
- * material's shader can never accidentally affect the other's compiled attribute layout.
- * Neither mesh renders directly to screen; both are inputs to height-pass.ts.
+ * space and textured with a procedural bristle-streak alpha. Used for speckles and the swatch
+ * calibration page only — see the module doc comment above.
  */
 export function createStrokeMesh(maxInstances: number): StrokeMeshHandle {
   const colorAttrs = createInstancedGeometry(maxInstances);
   const heightAttrs = createInstancedGeometry(maxInstances);
 
-  const colorMesh = new THREE.Mesh(colorAttrs.geometry, makeStrokeMaterial(colorFragmentShader));
+  const colorMesh = new THREE.Mesh(colorAttrs.geometry, makeDabMaterial(dabColorFragmentShader));
   colorMesh.frustumCulled = false;
-  const heightMesh = new THREE.Mesh(heightAttrs.geometry, makeStrokeMaterial(heightFragmentShader));
+  const heightMesh = new THREE.Mesh(heightAttrs.geometry, makeDabMaterial(dabHeightFragmentShader));
   heightMesh.frustumCulled = false;
 
   function setStrokes(strokes: Stroke[]) {
@@ -360,4 +240,253 @@ export function createStrokeMesh(maxInstances: number): StrokeMeshHandle {
   }
 
   return { colorMesh, heightMesh, setStrokes };
+}
+
+// ---------------------------------------------------------------------------------------
+// Ribbons — the main figure's limbs. One real connected triangle-strip mesh per chain (not
+// instanced quads), built fresh on the CPU each frame from generateChainRibbons' path
+// points. Adjacent points share actual geometry, so there is no boundary between separate
+// primitives for a seam to ever appear at — see docs/work/pose-pipeline.md Round 12.
+//
+// Billboarding without a per-vertex shader trick: the camera's viewing ANGLE never changes
+// (see shell/canvas.ts — only distance/pan do, as a viewfinder control), so the view
+// direction is a build-time constant. Each point's sideways (width) axis is computed once on
+// the CPU as tangent × viewForward, giving real 3D vertex positions that face the camera
+// correctly without needing per-instance view-space math in the vertex shader.
+// ---------------------------------------------------------------------------------------
+
+const ribbonVertexShader = /* glsl */ `
+  precision highp float;
+
+  // "position" is auto-declared by THREE.ShaderMaterial from the geometry's own position
+  // attribute — real baked vertex positions here, not a billboard quad corner.
+  in float side;
+  in float arcLength;
+  in float ribbonWidth;
+  in float volume;
+  in vec3 vertColor;
+  in float seed;
+
+  out float vSide;
+  out float vArcLength;
+  out float vWidth;
+  out float vVolume;
+  out vec3 vColor;
+  out float vSeed;
+
+  void main() {
+    vSide = side;
+    vArcLength = arcLength;
+    vWidth = ribbonWidth;
+    vVolume = volume;
+    vColor = vertColor;
+    vSeed = seed;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+// Adapted from dabShapeGLSL above, same visual language (tear/bristle/facet/lump/crown), but
+// with two structural differences that fall directly out of being a real connected mesh
+// instead of independent quads: 'across' comes from a per-vertex side coordinate (-1/+1 at
+// the true edges, interpolated by the rasterizer — geometrically exact, not a UV
+// approximation) instead of vUv.y, and 'alongChain' is the vertex's own real arc-length
+// (continuous by construction across the whole chain) instead of a reconstructed
+// vChainOffset + vUv.x*vLength. No cap-taper logic: an interior point never needs one (there
+// is no dab boundary to fade), and the true ends of a chain taper because
+// generateChainRibbons shrinks their WIDTH directly — a geometric taper, not a shader fade.
+const ribbonShapeGLSL = /* glsl */ `
+  float across = abs(vSide);
+  float alongChain = vArcLength;
+  float uvAcross = vSide * 0.5 + 0.5; // 0..1, same role vUv.y played for ridge striping
+
+  float tearPhase = alongChain * 9.0 + vSeed * 13.0;
+  float tear = sin(tearPhase) * 0.5 + sin(tearPhase * 2.3 + vSeed * 5.0) * 0.3;
+  float edgeStart = clamp(0.5 + 0.16 * tear, 0.15, 0.7);
+  float widthMask = 1.0 - smoothstep(edgeStart, edgeStart + 0.38, across);
+
+  float ridgeSpacing = 0.42;
+  float cycles = min(vWidth / ridgeSpacing, 40.0);
+  float wave1 = uvAcross * cycles * 6.28318 + vSeed * 11.0;
+  float wave2 = uvAcross * cycles * 1.7 * 6.28318 + vSeed * 7.0;
+  float rawBristle = 0.5 + 0.35 * sin(wave1) + 0.15 * sin(wave2);
+
+  float phaseDeriv = fwidth(wave1);
+  float bristleAmp = clamp(1.0 - phaseDeriv / 3.14159, 0.0, 1.0);
+
+  float facetCell = floor(alongChain * 2.6 + vSeed * 8.0);
+  float facetHash = fract(sin(facetCell * 12.9898 + vSeed * 78.233) * 43758.5453);
+  float facetShade = 0.6 + 0.4 * facetHash;
+
+  float bristle = mix(1.0, rawBristle, 0.6 * bristleAmp) * mix(1.0, facetShade, 0.55);
+
+  // alpha must not be modulated by bristle/facetShade — see docs/work/pose-pipeline.md Round
+  // 9: a low-facet cell dropping alpha toward 0 reads as an actual hole in the paint.
+  float alpha = clamp(widthMask, 0.0, 1.0);
+  if (alpha < 0.02) discard;
+
+  float crown = cos(clamp(across, 0.0, 1.0) * 1.5707963);
+  float ridgeHeight = (rawBristle - 0.5) * bristleAmp;
+  float lumpPhase = alongChain * 5.0 + vSeed * 17.0;
+  float lump = 0.9 + 0.1 * sin(lumpPhase) * sin(lumpPhase * 0.63 + vSeed * 4.0);
+  float heightProfile = crown * (lump * mix(1.0, facetShade, 0.2) + ridgeHeight * 0.35);
+`;
+
+const ribbonColorFragmentShader = /* glsl */ `
+  precision highp float;
+
+  in float vSide;
+  in float vArcLength;
+  in float vWidth;
+  in float vVolume;
+  in vec3 vColor;
+  in float vSeed;
+
+  out vec4 outColor;
+
+  void main() {
+    ${ribbonShapeGLSL}
+
+    float grainHash = fract(sin(dot(vec2(alongChain, vSide) * vec2(311.7, 191.3) + vSeed, vec2(12.9898, 78.233))) * 43758.5453);
+    float grain = (grainHash - 0.5) * 0.22;
+    float pigmentLoad = mix(0.8, 1.2, bristle) + grain;
+    vec3 tintedColor = clamp(vColor * pigmentLoad, 0.0, 1.5);
+
+    outColor = vec4(tintedColor * alpha, alpha);
+  }
+`;
+
+const ribbonHeightFragmentShader = /* glsl */ `
+  precision highp float;
+
+  in float vSide;
+  in float vArcLength;
+  in float vWidth;
+  in float vVolume;
+  in vec3 vColor;
+  in float vSeed;
+
+  out vec4 outColor;
+
+  void main() {
+    ${ribbonShapeGLSL}
+
+    outColor = vec4(heightProfile * vVolume, 0.0, 0.0, 1.0);
+  }
+`;
+
+function makeRibbonMaterial(fragmentShader: string): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    glslVersion: THREE.GLSL3,
+    vertexShader: ribbonVertexShader,
+    fragmentShader,
+    blending: THREE.AdditiveBlending,
+    depthTest: false,
+    depthWrite: false,
+    transparent: false,
+    // The width axis (tangent x viewForward) can flip winding depending on which way a
+    // segment happens to be traveling — cull nothing rather than track winding per segment.
+    // Safe with depthTest off: there's nothing for a stray backface to incorrectly occlude.
+    side: THREE.DoubleSide,
+  });
+}
+
+const tmpTangent = new THREE.Vector3();
+const tmpPerp = new THREE.Vector3();
+const tmpA = new THREE.Vector3();
+const tmpB = new THREE.Vector3();
+
+function buildRibbonGeometry(ribbons: Ribbon[], viewForward: THREE.Vector3): THREE.BufferGeometry {
+  const positions: number[] = [];
+  const sides: number[] = [];
+  const arcLengths: number[] = [];
+  const widths: number[] = [];
+  const volumes: number[] = [];
+  const colors: number[] = [];
+  const seeds: number[] = [];
+  const indices: number[] = [];
+
+  for (const ribbon of ribbons) {
+    const pts = ribbon.points;
+    if (pts.length < 2) continue;
+    const baseVertex = positions.length / 3;
+
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      // Tangent at this point — the direction of travel, averaged from the incoming and
+      // outgoing segments at an interior point so the ribbon doesn't kink sharply in
+      // cross-section at a joint. A true miter join would need more geometry than a bend
+      // this modest actually requires.
+      const prev = pts[Math.max(0, i - 1)];
+      const next = pts[Math.min(pts.length - 1, i + 1)];
+      tmpA.set(prev.position[0], prev.position[1], prev.position[2]);
+      tmpB.set(next.position[0], next.position[1], next.position[2]);
+      tmpTangent.subVectors(tmpB, tmpA);
+      if (tmpTangent.lengthSq() < 1e-10) tmpTangent.set(1, 0, 0);
+      tmpTangent.normalize();
+
+      tmpPerp.crossVectors(tmpTangent, viewForward);
+      if (tmpPerp.lengthSq() < 1e-10) tmpPerp.set(0, 1, 0);
+      tmpPerp.normalize();
+
+      const half = p.width / 2;
+      const [cx, cy, cz] = p.position;
+
+      positions.push(cx + tmpPerp.x * half, cy + tmpPerp.y * half, cz + tmpPerp.z * half);
+      sides.push(1);
+      positions.push(cx - tmpPerp.x * half, cy - tmpPerp.y * half, cz - tmpPerp.z * half);
+      sides.push(-1);
+
+      for (let k = 0; k < 2; k++) {
+        arcLengths.push(p.arcLength);
+        widths.push(p.width);
+        volumes.push(p.volume);
+        colors.push(ribbon.color[0], ribbon.color[1], ribbon.color[2]);
+        seeds.push(ribbon.seed);
+      }
+    }
+
+    for (let i = 0; i < pts.length - 1; i++) {
+      const l0 = baseVertex + i * 2;
+      const r0 = l0 + 1;
+      const l1 = l0 + 2;
+      const r1 = l0 + 3;
+      indices.push(l0, r0, l1, r0, r1, l1);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute("side", new THREE.Float32BufferAttribute(sides, 1));
+  geometry.setAttribute("arcLength", new THREE.Float32BufferAttribute(arcLengths, 1));
+  geometry.setAttribute("ribbonWidth", new THREE.Float32BufferAttribute(widths, 1));
+  geometry.setAttribute("volume", new THREE.Float32BufferAttribute(volumes, 1));
+  geometry.setAttribute("vertColor", new THREE.Float32BufferAttribute(colors, 3));
+  geometry.setAttribute("seed", new THREE.Float32BufferAttribute(seeds, 1));
+  geometry.setIndex(indices);
+  return geometry;
+}
+
+export interface RibbonMeshHandle {
+  colorMesh: THREE.Mesh;
+  heightMesh: THREE.Mesh;
+  setRibbons(ribbons: Ribbon[]): void;
+}
+
+/** `viewForward` is the camera's fixed look direction (target - position, normalized) — see
+ * the module doc comment above for why this can be a build-time constant. */
+export function createRibbonMesh(viewForward: THREE.Vector3): RibbonMeshHandle {
+  const colorMesh = new THREE.Mesh(new THREE.BufferGeometry(), makeRibbonMaterial(ribbonColorFragmentShader));
+  colorMesh.frustumCulled = false;
+  const heightMesh = new THREE.Mesh(new THREE.BufferGeometry(), makeRibbonMaterial(ribbonHeightFragmentShader));
+  heightMesh.frustumCulled = false;
+
+  function setRibbons(ribbons: Ribbon[]) {
+    const newGeometry = buildRibbonGeometry(ribbons, viewForward);
+    const oldGeometry = colorMesh.geometry;
+    colorMesh.geometry = newGeometry;
+    heightMesh.geometry = newGeometry;
+    oldGeometry.dispose();
+  }
+
+  return { colorMesh, heightMesh, setRibbons };
 }

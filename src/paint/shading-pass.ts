@@ -29,8 +29,20 @@ const quadFragmentShader = /* glsl */ `
   in vec2 vUv;
   out vec4 outColor;
 
+  // Height accumulates additively across every overlapping stroke instance with no
+  // normalization, unlike color (which divides by its own accumulated alpha just below) —
+  // where two dabs' rendered footprints overlap, height gets literal double contribution,
+  // an extra bump exactly where two strokes meet. Coverage (alpha, from uColorSum) IS a
+  // reasonable proxy for "how many roughly-opaque layers stacked here," so dividing by it
+  // (only when it EXCEEDS 1 — a single dab's own partial edge coverage must not artificially
+  // inflate its height) cancels that stacking the same way color's own normalization does.
+  // TEMP diagnostic (Round 12, see docs/work/pose-pipeline.md) — testing whether this,
+  // combined with restoring generous dab overlap, gives smooth blending without a boundary
+  // seam, instead of removing overlap entirely.
   float heightAt(vec2 uv) {
-    return texture(uHeightSum, uv).r;
+    float h = texture(uHeightSum, uv).r;
+    float cov = texture(uColorSum, uv).a;
+    return h / max(cov, 1.0);
   }
 
   // THREE.Color(hex) stores linear-space values (ColorManagement is on by default), and all
