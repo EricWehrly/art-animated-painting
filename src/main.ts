@@ -96,7 +96,10 @@ async function main() {
     const c = new THREE.Color(hex);
     return {
       color: [c.r, c.g, c.b],
-      widthScale: 1.2 * params.strokeWidthScale,
+      // Bumped from 1.2: a limb needs to read as a painted shape with real width, not a
+      // hairline wire tracing the bone — thin strokes are also what made per-dab facet
+      // texture (stroke-mesh.ts facetGate) read as literal beads instead of surface texture.
+      widthScale: 1.7 * params.strokeWidthScale,
       lengthScale: params.strokeLengthScale,
       volumeScale: 0.35,
       pressureVariance: params.pressureVariance,

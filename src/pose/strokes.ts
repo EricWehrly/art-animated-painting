@@ -18,6 +18,14 @@ export interface Stroke {
   color: [number, number, number];
   /** Per-instance phase, decorrelates the procedural brush texture between strokes. */
   seed: number;
+  /** World-space distance from this CHAIN's start to this dab's leading (u=0) edge — feeds
+   * stroke-mesh.ts's tear/bristle/facet/lump texture patterns so they're computed from a
+   * continuous coordinate along the whole limb instead of each dab's own local 0..1, which is
+   * what made a chain of touching dabs read as separate beads even once their widths and caps
+   * lined up: each dab's texture pattern independently restarted its phase at 0, so neighbors
+   * never matched at the seam. 0 for strokes that aren't part of a chain (speckles, swatches)
+   * — harmless since those also use a fully independent per-instance seed already. */
+  chainOffset: number;
   /** Whether this dab's start/end should taper into a rounded brush cap (true — a real
    * beginning/end of a brush pass) or blend straight through at full coverage (false — an
    * interior seam continuing from/into an adjacent dab in the same chain). Without this,
@@ -128,6 +136,15 @@ export function generateChainStrokes(
     // Runs across the WHOLE chain, not reset per bone — keeps paint-load identity, and
     // therefore the visible dab pattern, continuous as the brush crosses joints.
     let dabSlot = 0;
+    // True arc-length distance walked from the chain's start — feeds each dab's chainOffset
+    // (see the Stroke.chainOffset doc comment), which is what lets stroke-mesh.ts's texture
+    // read as one continuous limb instead of a chain of independently-phased dabs.
+    let chainOffset = 0;
+    // Constant for every dab in this chain (not per-dab) so neighboring dabs' bristle/facet/
+    // lump patterns share the same phase offset and only their now-continuous chainOffset
+    // coordinate distinguishes them — a per-dab seed here would recreate the exact seam
+    // problem chainOffset is meant to fix, just shifted into the seed term instead of along.
+    const chainSeed = chainIndex * 0.6180339887;
 
     // Width at each JOINT, not each bone — a real limb narrows continuously along its length,
     // it doesn't step in diameter exactly at a knee or elbow. The first/last joints just take
@@ -239,20 +256,44 @@ export function generateChainStrokes(
           (brushPos[2] + newPos[2]) / 2,
         ];
 
-        const renderLength = Math.max(0.15, stepLength * style.lengthScale);
+        // A deliberate overlap here (tried at 1.35x) turned out to be actively harmful: the
+        // height field accumulates ADDITIVELY across overlapping instances with no
+        // coverage-normalization (unlike color, which divides by alpha — see
+        // shading-pass.ts), so any overlap between two dabs doubles their paint HEIGHT in the
+        // overlap zone, creating a real bump at every dab boundary regardless of texture
+        // tuning. That bump — not mismatched per-dab texture — was the dominant cause of the
+        // "beaded chain" look. Texture continuity across the seam is now handled by
+        // chainOffset (a continuous coordinate, see the Stroke.chainOffset doc comment), so
+        // dabs can go back to abutting almost exactly without reopening the seam problem the
+        // overlap was originally trying to solve.
+        const renderLength = Math.max(0.15, stepLength * style.lengthScale * 1.03);
         const pressure = 1 + style.pressureVariance * (paintLoad * 2 - 1);
+        // The quad's leading (u=0) edge sits half the overlap-inflated render length behind
+        // the dab's true center — see the Stroke.chainOffset doc comment for why this needs
+        // to be a continuous chain-arc-length coordinate rather than resetting per dab.
+        const quadStartOffset = chainOffset - (renderLength - stepLength) / 2;
 
         chainDabs.push({
           position: dabCenter,
           velocity: heading,
           length: renderLength,
-          width: thickness * style.widthScale * pressure,
+          // Width is driven ONLY by the smooth per-joint taper (jointThickness), never by
+          // per-dab pressure — a limb's actual silhouette doesn't pulse wider/narrower every
+          // few world-units. Letting paintLoad/pressure swing width independently per dab is
+          // what turned a smoothly-tapering limb into a chain of alternating-width beads
+          // (each width step reads as a knuckle). Paint unevenness still shows: pressure
+          // still scales volume (a dab lays down more/less material without changing the
+          // outline it paints), and the shader's own bristle/facet/grain patterns already vary
+          // richness along the stroke.
+          width: thickness * style.widthScale,
           volume: (0.15 + speed * style.volumeScale) * pressure,
           color: style.color,
-          seed: identity * 0.6180339887,
+          seed: chainSeed,
+          chainOffset: quadStartOffset,
         });
 
         brushPos = newPos;
+        chainOffset += stepLength;
         dabSlot++;
       }
     }
@@ -316,6 +357,7 @@ export function generateSpeckles(emitters: Emitter[], frame: number, style: Spec
         volume: 0.04 + r1 * 0.06,
         color: style.color,
         seed,
+        chainOffset: 0,
         capStart: true,
         capEnd: true,
       });

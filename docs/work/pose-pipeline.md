@@ -377,3 +377,57 @@ both about the CURRENT bone's data being used as a hard constant within its own 
 Verified visually at frame 25 (calm, matching the user's screenshot) and frame 180 (duress
 on, mid-motion, no console errors, no regression to the Round 7 runaway/disjointed bugs): a
 leg now reads as one continuously tapering form, no visible bulge at the knee or ankle.
+
+### Round 9: still "joint-heavy" at zero motion — the beading was never about motion at all
+
+User reframed the whole approach: "Use the bones to derive a shape. Try to paint the shape.
+... Stop having the bones be where we draw / start drawing." The concrete test: render the
+FIRST frame with no force (duress off) and check whether it reads as a stick figure or a
+jointed skeleton. It read as the latter — confirmed by rendering frame 0, calm mode, and
+zooming into a single leg/arm: a visible chain of distinct beads at fairly regular intervals,
+independent of any motion effect (duress was off the whole time). Four separate causes, found
+by removing one at a time and re-rendering the same zoomed crop after each fix:
+
+1. **Width pulsed randomly per dab.** `pressure` (from `pressureVariance`, meant to vary how
+   much paint a dab laid down) was also multiplied into `width` — so the limb's own silhouette
+   randomly widened and narrowed every dab, on top of the smooth Round 8 taper, each swing
+   reading as a knuckle. Fixed: width now comes ONLY from `jointThickness` (the smooth taper);
+   `pressure` still scales `volume` (how much material a dab deposits) but can no longer
+   change the outline it paints.
+2. **Every dab's surface texture restarted its own phase at 0.** The tear/bristle/facet/lump
+   patterns in `stroke-mesh.ts` (added earlier for the impasto knife-daub look) were all
+   functions of each dab's own *local* 0..1 coordinate — so even two touching, identically-
+   oriented, identically-wide dabs had uncorrelated texture, and the mismatch at their shared
+   edge read as a seam. Fixed by adding `Stroke.chainOffset` — the dab's true arc-length
+   position along the WHOLE chain, tracked as `generateChainStrokes` walks — and switching
+   those texture patterns to a continuous coordinate (`vChainOffset + vUv.x * vLength`) built
+   from it, so a texture cycle that starts in one dab now correctly continues into the next
+   instead of resetting. Also switched the per-dab random `seed` to a per-CHAIN constant, for
+   the same reason (a fresh random seed per dab was its own source of discontinuity).
+3. **Facet/bristle shading was coupled into ALPHA, not just richness.** `alpha` (coverage —
+   is there paint here at all) included the `bristle`/`facetShade` factor, which was designed
+   to vary a stroke's *richness* but does so by dipping toward 0 — fine on one big calibration
+   swatch, but on a whole limb built from many dabs, a low-facet dip reads as a literal
+   transparent gap, and a run of them (a facet cell is a fixed world-size, so a short dab can
+   BE one cell) reads as a beaded chain with actual holes between beads. Decoupled: `alpha`
+   is now just `widthMask * endCap` (shape only); richness still varies pigment (color pass)
+   and height (below), just can't punch holes in the shape's own coverage anymore.
+4. **The real dominant cause: height accumulates additively, uncorrected for overlap.**
+   Chasing the residual banding (still strong after fixes 1-3) led to comparing
+   `shading-pass.ts` against `colorFragmentShader`: color divides its accumulated sum by
+   accumulated alpha before use (`colorSum.rgb / colorSum.a`), recovering a proper average —
+   but height is read raw (`texture(uHeightSum, uv).r`), with no equivalent normalization.
+   Round 6 had deliberately rendered each dab ~35% longer than its physical travel so
+   neighboring dabs would overlap (that was the fix attempted for cause 2, before chainOffset
+   existed) — every overlap zone was therefore getting height from TWO dabs summed, a real
+   doubled bump at every dab boundary, which is what dominated regardless of how much the
+   procedural texture amplitude (cause 2/3 fixes) was tuned down. Fixed by shrinking the
+   render-length inflation back to ~1.03x (just enough to avoid a hairline gap) now that
+   chainOffset (fix 2) makes texture continuity hold without deliberate overlap. Also bumped
+   base `widthScale` 1.2 → 1.7 (main.ts) — with the beading gone, the figure read as a
+   hairline wire rather than a painted shape at the old width.
+
+Verified visually at frame 0, calm mode, zoomed to a single leg/arm after each of the four
+fixes — the beaded/gapped look is gone; a limb now reads as one continuous tapering painted
+shape with subtle (not seam-like) texture. Checked frame 180 (duress on) for regressions:
+still bounded/contiguous, no runaway or disjointed strokes.

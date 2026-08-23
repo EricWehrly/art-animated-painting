@@ -59,6 +59,7 @@ function buildSwatchStrokes(params: ToyParams): Stroke[] {
       volume: spec.volume,
       color: [c.r, c.g, c.b],
       seed: i * 0.6180339887,
+      chainOffset: 0,
       capStart: true,
       capEnd: true,
     });
