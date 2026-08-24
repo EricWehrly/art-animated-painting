@@ -215,7 +215,17 @@ export function generateChainMarks(
       // persists down the segment, so the number of lanes can't change partway through it.
       const numLanes = Math.max(1, Math.round(((width0 + width1) / 2) / style.markWidth));
 
-      const stepSpacing = Math.max(0.12, style.stepLength * (1 - style.stepOverlap));
+      // Anchor DENSITY (how many steps a lane gets) is a coverage requirement — "the entire
+      // stick figure area should be filled in" — and must hold regardless of how long any
+      // individual stroke ends up being; stroke length is a separate, secondary rendering
+      // choice (motion, style) that must never be able to open a gap. So this is sized off the
+      // WORST-CASE shortest a step's walk can ever be (the stepLength*0.4 floor below), not the
+      // nominal stepLength — using the nominal value here was Round 14/15's implicit (and
+      // wrong) coupling of "how far a stroke travels" to "how many strokes are needed," which
+      // is exactly the coupling the user asked to remove. See docs/work/pose-pipeline.md
+      // Round 16.
+      const minPossibleWalkLength = style.stepLength * 0.4;
+      const stepSpacing = Math.max(0.12, minPossibleWalkLength * (1 - style.stepOverlap));
       // At least 2 steps even on a short bone (hand, foot) — one step has only one randomized
       // length deciding whether it bridges to the next segment's own coverage, and a short
       // miss there is a visible gap at the joint.
@@ -301,8 +311,10 @@ export function generateChainMarks(
           const walkLength = Math.max(style.stepLength * 0.4, style.stepLength * lengthJitter * style.lengthScale);
           // Motion still visibly drags the MARK out — "we do want them longer (at a reasonable
           // proportion)... dragged out a little" — capped well short of maxMarkLength so that
-          // stays a hard safety ceiling, not the normal operating point.
-          const smearBonus = Math.min(speed * style.smearScale, 0.8);
+          // stays a hard safety ceiling, not the normal operating point. Tightened from 0.8
+          // (Round 15) per direct instruction to further reduce how much strokes respond to
+          // motion, on top of the walk/render decoupling above — see Round 16.
+          const smearBonus = Math.min(speed * style.smearScale, 0.5);
           const renderLength = Math.min(style.maxMarkLength, walkLength * (1 + smearBonus));
 
           // Walk the lane's own actual position under the wobbling heading — this, not just
@@ -411,11 +423,21 @@ export interface SpeckleStyle {
  * the same stroke-mesh rendering: a speckle is just a small, nearly round stroke, so no new
  * geometry or shader is needed. See docs/work/pose-pipeline.md "Strokes".
  *
- * Scatter is deliberately anisotropic — jitter only ACROSS the fling direction (via an
- * arbitrary perpendicular basis), never along it — and droplet size/elongation scale up with
- * how fast the emitter was moving. An isotropic jitter cloud reads as generic noise; a tight,
- * increasingly-stretched spray along one direction reads as an actual fling. See
- * docs/work/pose-pipeline.md Round 15.
+ * Two things make this read as "the brush getting away from the painter" rather than ambient
+ * noise (see docs/work/pose-pipeline.md Round 16, reference: a Pollock-style splatter photo —
+ * a mix of fine directional spatter and a few long, thin, wildly-flung strands, not a uniform
+ * dot cloud):
+ *
+ * 1. Each droplet's own flung direction is randomly rotated off the emitter's exact velocity
+ *    direction, by an angle that grows with speed — real spatter fans out chaotically under
+ *    momentum and surface tension, it doesn't all travel in one perfectly uniform line. Built
+ *    as a cone around `dir` using an arbitrary perpendicular basis (`cross()`, same trick
+ *    generateChainMarks uses for lane offsets): `chaosTheta` picks how far off-axis, `chaosPhi`
+ *    picks which way around the cone.
+ * 2. A minority of droplets per emission roll as long, thin "strands" (both longer AND flung
+ *    further than a normal droplet) rather than every droplet just being a scaled-up dot —
+ *    mimicking the whip-like flung lines actually visible in real spatter, alongside the
+ *    smaller round droplets.
  */
 export function generateSpeckles(emitters: Emitter[], frame: number, style: SpeckleStyle): Stroke[] {
   const speckles: Stroke[] = [];
@@ -442,28 +464,44 @@ export function generateSpeckles(emitters: Emitter[], frame: number, style: Spec
     // fewer-but-bigger, more visibly stretched droplets further out — "accentuated... dragged
     // out a little," the same shape the main strokes' render-length change follows above.
     const elongation = 1 + speedRatio * 1.6;
-    const acrossSpread = style.spread * (0.15 + speedRatio * 0.35);
+    // How far off the true velocity direction a droplet's OWN flung direction can wander — the
+    // chaotic fan, not a positional jitter. Modest even at low speed (real spatter always fans
+    // out some), much wider at high speed.
+    const maxChaosAngle = 0.25 + speedRatio * 0.7;
 
     for (let k = 0; k < count; k++) {
       const seed = frame * 97.13 + i * 13.7 + k * 7.31;
       const r1 = hash(seed);
       const r2 = hash(seed + 0.37);
-      const r3 = hash(seed + 0.71);
       const r4 = hash(seed + 1.13);
+      const r5 = hash(seed + 1.51);
+      const r6 = hash(seed + 1.93);
 
-      const flingDist = style.spread * (0.5 + r1 * 1.5) * speedRatio;
-      const acrossA = (r3 - 0.5) * acrossSpread;
-      const acrossB = (r4 - 0.5) * acrossSpread;
+      const chaosTheta = r5 * maxChaosAngle;
+      const chaosPhi = r6 * Math.PI * 2;
+      const cosT = Math.cos(chaosTheta);
+      const sinT = Math.sin(chaosTheta);
+      const flungDir: [number, number, number] = [
+        dir[0] * cosT + (perpA[0] * Math.cos(chaosPhi) + perpB[0] * Math.sin(chaosPhi)) * sinT,
+        dir[1] * cosT + (perpA[1] * Math.cos(chaosPhi) + perpB[1] * Math.sin(chaosPhi)) * sinT,
+        dir[2] * cosT + (perpA[2] * Math.cos(chaosPhi) + perpB[2] * Math.sin(chaosPhi)) * sinT,
+      ];
+
+      // ~1 in 4 droplets is a long, thin, far-flung strand instead of a small round one.
+      const isStrand = r4 > 0.75;
+      const strandMul = isStrand ? 1.7 + r2 * 1.3 : 1;
+
+      const flingDist = style.spread * (0.5 + r1 * 1.5) * speedRatio * strandMul;
 
       speckles.push({
         position: [
-          e.position[0] + dir[0] * flingDist + perpA[0] * acrossA + perpB[0] * acrossB,
-          e.position[1] + dir[1] * flingDist + perpA[1] * acrossA + perpB[1] * acrossB,
-          e.position[2] + dir[2] * flingDist + perpA[2] * acrossA + perpB[2] * acrossB,
+          e.position[0] + flungDir[0] * flingDist,
+          e.position[1] + flungDir[1] * flingDist,
+          e.position[2] + flungDir[2] * flingDist,
         ],
-        velocity: e.velocity,
-        length: style.sizeScale * (0.5 + r1 * 0.6) * elongation,
-        width: style.sizeScale * (0.3 + r2 * 0.4) * (1 - speedRatio * 0.2),
+        velocity: flungDir,
+        length: style.sizeScale * (0.5 + r1 * 0.6) * elongation * strandMul,
+        width: (style.sizeScale * (0.3 + r2 * 0.4) * (1 - speedRatio * 0.2)) / (isStrand ? strandMul * 0.6 : 1),
         volume: (0.04 + r1 * 0.06) * (1 + speedRatio * 0.6),
         color: style.color,
         seed,

@@ -814,3 +814,53 @@ accentuated force, contained position, better speckles) were all served by tight
 EXISTING model rather than by building a second, alternate one, so no second mode was built.
 If motion still needs a genuinely different regime once the tightened version is judged, that's
 the next thing to reopen.
+
+### Round 16: coverage must not depend on stroke length; speckles need chaos, not just scale
+
+User's framing, articulated while sketching against a real splatter-painting reference: "I
+think reducing stroke length should not result in gaps. The stroke length is just how far
+you're getting with that brush stroke... It should still be the intention that our entire stick
+figure 'area' be filled in... We're not doing 'a series of brush strokes at locations dictated
+by the map / bones' — We're 'filling in the area of the figure' and again putting together the
+area from the bones because motion." Also asked to further "reduce the amount that strokes are
+impacted by motion." Separately, on speckles: "make them look more like the result of forceful
+paint flinging? They should be the brush 'getting away from the painter' sort of" — with a
+Pollock-style splatter photo attached, showing a mix of fine directional spatter and long, thin,
+wildly-flung strands, not a uniform dot cloud.
+
+**Coverage was implicitly coupled to stroke length.** `generateChainMarks` computed how many
+steps (anchor points) a lane needed from `segLen / stepSpacing`, where `stepSpacing` was derived
+from the STYLE's nominal `stepLength`. That conflated two things that should be independent: how
+DENSELY a region needs to be sampled to stay fully covered (a coverage requirement) and how long
+any one stroke happens to render (a style/motion choice). Fixed by computing `stepSpacing` from
+the WORST-CASE shortest a step's walk can ever be (`stepLength * 0.4`, the existing hard floor)
+rather than the nominal value — this guarantees enough anchor density to keep the region covered
+regardless of what any individual stroke's actual length ends up being, which is the invariant
+the user was describing directly: "not… strokes at locations dictated by the bones" but "filling
+in the area… putting together the area from the bones."
+
+**Motion's remaining impact turned down further**, on top of Round 15's walk/render split:
+`motionForceScale` 1.0→0.7, `maxMotionForce` 0.75→0.55, `smearScale` 1.2→0.8, and the smear
+bonus's hard cap (already added in Round 15) tightened from +80% to +50%.
+
+**Speckles gained two things a scale-up alone can't give: chaos and variety.** Previously every
+droplet from one emitter flew in the exact same direction (the emitter's own raw velocity),
+varying only in position — visually that reads as "the same fling, scattered," which is what
+the user meant by "too normal... scattering and noise." Now each droplet's OWN flung direction
+is randomly rotated off the true velocity direction by an angle that grows with speed (a cone
+built from the same `cross()`-based perpendicular-basis trick `generateChainMarks` already uses
+for lane offsets) — real spatter fans out unpredictably under momentum, it doesn't travel in one
+perfectly uniform line, which is the mechanical version of "the brush getting away from the
+painter." Separately, about 1 in 4 droplets per emission rolls as a long, thin, far-flung
+"strand" instead of a small round droplet, mixing two visibly different droplet shapes the way
+the reference photo does, rather than one droplet shape at varying sizes.
+
+Verified: solo dancer at rest shows denser, still-gapless coverage (visibly more continuous than
+Round 14/15's, since anchor density is now sized for the worst case rather than the average).
+Frame 51 (the case flagged last round) with both dancers under motion now shows a much smaller
+gap in relative size between the fast and slow leg — still visibly bigger (correctly, since it
+really is moving faster), but no longer a barely-recognizable mass dominating the frame. Zoomed
+speckle crop at the same frame shows a genuinely chaotic fan of varied-length, varied-angle
+strands radiating off the limb's edge, not a uniform radial dot cloud. swatch.html and
+compare.html (BASE_STYLE/variant labels updated to the new motion defaults) both load with no
+console errors.

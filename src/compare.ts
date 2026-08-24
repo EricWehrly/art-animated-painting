@@ -32,9 +32,9 @@ const BASE_STYLE: Omit<BoneStrokeStyle, "color"> = {
   dryMinLoad: 0.15,
   dryWidthFactor: 0.45,
   dryVolumeFactor: 0.4,
-  motionForceScale: 1.0,
-  maxMotionForce: 0.75,
-  smearScale: 1.2,
+  motionForceScale: 0.7,
+  maxMotionForce: 0.55,
+  smearScale: 0.8,
   maxMarkLength: 4.5,
   speckleSpeedThreshold: Infinity, // this page doesn't render speckles
 };
@@ -46,10 +46,10 @@ interface Variant {
 
 function buildVariants(color: [number, number, number]): Variant[] {
   return [
-    { label: "current (motionForce 1.0/0.75, smear 1.2)", style: { ...BASE_STYLE, color } },
+    { label: "current (motionForce 0.7/0.55, smear 0.8)", style: { ...BASE_STYLE, color } },
     {
-      label: "tighter motion force (0.4/0.3, smear 0.5)",
-      style: { ...BASE_STYLE, color, motionForceScale: 0.4, maxMotionForce: 0.3, smearScale: 0.5 },
+      label: "tighter motion force (0.3/0.2, smear 0.4)",
+      style: { ...BASE_STYLE, color, motionForceScale: 0.3, maxMotionForce: 0.2, smearScale: 0.4 },
     },
     {
       label: "no motion force — pure bone-aligned (0/0/0)",

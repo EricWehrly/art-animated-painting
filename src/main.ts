@@ -132,10 +132,11 @@ async function main() {
       dryVolumeFactor: 0.4,
       // Unlike the old seeking-brush's maxWaverBlend, this has no 0.5 stability ceiling (see
       // BoneStrokeStyle doc comment) — these values are an art-direction choice, not a
-      // correctness one.
-      motionForceScale: params.duress ? 1.0 : 0,
-      maxMotionForce: params.duress ? 0.75 : 0,
-      smearScale: params.duress ? 1.2 : 0,
+      // correctness one. Turned down from 1.0/0.75/1.2 per direct instruction ("reduce the
+      // amount that strokes are impacted by motion") — see docs/work/pose-pipeline.md Round 16.
+      motionForceScale: params.duress ? 0.7 : 0,
+      maxMotionForce: params.duress ? 0.55 : 0,
+      smearScale: params.duress ? 0.8 : 0,
       maxMarkLength: 4.5,
       // Speckles should read as the breaking point of a stroke's own fling, not a separate
       // effect — see speckleStyleFor's spread comment.
