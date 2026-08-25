@@ -26,6 +26,9 @@ export interface BoneStrokeStyle {
   color: [number, number, number];
   widthScale: number;
   lengthScale: number;
+  /** How much a step's paint volume (height/relief) SHRINKS as motion intensity rises — a
+   * fast, quick pass is shallower, not bolder (see Round 17; this inverted from Round 15/16,
+   * which used it to boost volume with raw speed). 0 = volume never responds to motion. */
   volumeScale: number;
   /** Extra multiplicative width/volume shake per step, layered on top of the paint-load
    * depletion below — "uneven pressure," not just "less paint." */
@@ -272,13 +275,30 @@ export function generateChainMarks(
           // leave a visible gap instead of overlapping like real brush passes do.
           const laneWidthRendered = (localWidth / numLanes) * 1.6;
 
+          // Sampled early (before the wobble update below) so motionIntensity can drive how
+          // much this step wobbles in the first place — see the module doc comment on the
+          // Round 17 "lower motion = smoother, higher motion = shakier" framing.
+          const { velocity } = sampleBoneAtT(cache, parentIndex, childIndex, dancerIndex, frame, t);
+          const speed = Math.hypot(velocity[0], velocity[1], velocity[2]);
+          const forceBlend = Math.min(speed * style.motionForceScale, style.maxMotionForce);
+          // 0 at rest, 1 when motion has fully saturated its own cap — a single, reusable
+          // "how much is this step being driven by motion right now" signal for everything
+          // below (wobble amount, pressure unevenness, containment looseness, width/volume),
+          // instead of each one reading raw speed on its own arbitrary scale.
+          const motionIntensity = style.maxMotionForce > 0 ? forceBlend / style.maxMotionForce : 0;
+
           // Persistent, damped random walk around the bone tangent — a shaky hand trying to
           // hold a general direction, not independent per-step noise (see the module doc
           // comment). Damping pulls it back toward 0 (straight along the tangent) each step,
-          // which is what keeps a pass "trying to move in the same general direction."
-          wobble += (hash(stepId + 0.53) - 0.5) * style.wobbleAngle;
+          // which is what keeps a pass "trying to move in the same general direction." Scaled
+          // by motionIntensity so a calm bone reads smoother/more even and a fast one reads
+          // shakier/more uneven, rather than every bone wobbling by the same fixed amount
+          // regardless of how much motion is actually driving it — see Round 17.
+          const wobbleGain = 0.35 + motionIntensity * 1.4;
+          wobble += (hash(stepId + 0.53) - 0.5) * style.wobbleAngle * wobbleGain;
           wobble *= 1 - style.wobbleDamping;
-          wobble = Math.max(-style.wobbleAngle, Math.min(style.wobbleAngle, wobble));
+          const wobbleClamp = style.wobbleAngle * wobbleGain;
+          wobble = Math.max(-wobbleClamp, Math.min(wobbleClamp, wobble));
           const cosW = Math.cos(wobble);
           const sinW = Math.sin(wobble);
           const baseHeading: [number, number, number] = [
@@ -287,12 +307,9 @@ export function generateChainMarks(
             segDir[2] * cosW + perp[2] * sinW,
           ];
 
-          const { velocity } = sampleBoneAtT(cache, parentIndex, childIndex, dancerIndex, frame, t);
-          const speed = Math.hypot(velocity[0], velocity[1], velocity[2]);
           const velDir = speed > 1e-4 ? normalize(velocity) : baseHeading;
 
           // Motion layered on top of the base wobbling heading, not instead of it.
-          const forceBlend = Math.min(speed * style.motionForceScale, style.maxMotionForce);
           const heading = normalize([
             baseHeading[0] * (1 - forceBlend) + velDir[0] * forceBlend,
             baseHeading[1] * (1 - forceBlend) + velDir[1] * forceBlend,
@@ -322,19 +339,35 @@ export function generateChainMarks(
           // brush's real position drifts, not merely which way each stationary mark points.
           // Softly corrected back toward the lane's ideal track afterward (containmentPull) so
           // a run of unlucky wobble draws can't wander the pass out into negative space — the
-          // positive/negative-space framing this round asked for "not strictly confined... but
-          // touch as little negative space as possible."
+          // positive/negative-space framing asked for "not strictly confined... but touch as
+          // little negative space as possible." Looser (more freedom to wander) at high motion,
+          // tighter (calmer, more orderly) at rest — same "smoother vs. more dynamic" split as
+          // the wobble above.
           const walked: [number, number, number] = [
             passPos[0] + heading[0] * walkLength,
             passPos[1] + heading[1] * walkLength,
             passPos[2] + heading[2] * walkLength,
           ];
-          const containmentPull = 0.6;
-          const anchor: [number, number, number] = [
+          const containmentPull = 0.75 - motionIntensity * 0.2;
+          let anchor: [number, number, number] = [
             walked[0] + (idealPos[0] - walked[0]) * containmentPull,
             walked[1] + (idealPos[1] - walked[1]) * containmentPull,
             walked[2] + (idealPos[2] - walked[2]) * containmentPull,
           ];
+          // Hard safety net on top of the soft pull above: on a short bone (hand, foot) or an
+          // unlucky run of wobble draws, walkLength itself (a global, style-wide constant) can
+          // be large relative to THIS segment's own size, and containmentPull alone doesn't
+          // scale with that — the soft correction was found to still let a mark render
+          // visibly detached from its limb in some poses (see docs/work/pose-pipeline.md
+          // Round 17, the user's annotated screenshot). Never let the final anchor sit further
+          // from its ideal track than a couple of limb-widths, full stop.
+          const offset: [number, number, number] = [anchor[0] - idealPos[0], anchor[1] - idealPos[1], anchor[2] - idealPos[2]];
+          const offsetLen = Math.hypot(offset[0], offset[1], offset[2]);
+          const maxOffset = Math.max(localWidth * 2, 0.3);
+          if (offsetLen > maxOffset) {
+            const clampScale = maxOffset / offsetLen;
+            anchor = [idealPos[0] + offset[0] * clampScale, idealPos[1] + offset[1] * clampScale, idealPos[2] + offset[2] * clampScale];
+          }
           passPos = anchor;
 
           // Loading/depletion — how full the brush was AT THE START of this step decides how
@@ -343,12 +376,16 @@ export function generateChainMarks(
           const loadFrac = Math.max(0, Math.min(1, paintLoad));
           const dryWidthMul = style.dryWidthFactor + (1 - style.dryWidthFactor) * loadFrac;
           const dryVolumeMul = style.dryVolumeFactor + (1 - style.dryVolumeFactor) * loadFrac;
-          const pressureNoise = 1 + style.pressureVariance * 0.5 * (hash(stepId + 0.87) * 2 - 1);
+          // Pressure unevenness itself grows with motion too — "well-distributed" at rest,
+          // "more uneven" under motion, not a fixed wobble regardless of speed.
+          const pressureNoise = 1 + style.pressureVariance * (0.3 + motionIntensity * 0.7) * (hash(stepId + 0.87) * 2 - 1);
 
-          // A forceful step reads as slightly bolder too, not just longer — reuses the same
-          // capped smearBonus so this can't run away any more than the length can.
-          const width = laneWidthRendered * dryWidthMul * pressureNoise * (1 + smearBonus * 0.3);
-          const volume = (0.15 + speed * style.volumeScale) * dryVolumeMul * pressureNoise;
+          // Motion makes a stroke QUICKER and SHALLOWER, not bolder — a fast, grazing pass
+          // doesn't have time to lay down as much paint as a slow, deliberate one. Inverted
+          // from Round 15/16, which boosted width/volume with force; that read as the opposite
+          // of "shallower, more uneven, dynamic" once actually compared side by side.
+          const width = laneWidthRendered * dryWidthMul * pressureNoise * (1 - motionIntensity * 0.35);
+          const volume = Math.max(0.05, 0.2 - motionIntensity * style.volumeScale * 0.4) * dryVolumeMul * pressureNoise;
 
           if (debugOut) {
             debugOut.push({
@@ -423,21 +460,20 @@ export interface SpeckleStyle {
  * the same stroke-mesh rendering: a speckle is just a small, nearly round stroke, so no new
  * geometry or shader is needed. See docs/work/pose-pipeline.md "Strokes".
  *
- * Two things make this read as "the brush getting away from the painter" rather than ambient
- * noise (see docs/work/pose-pipeline.md Round 16, reference: a Pollock-style splatter photo —
- * a mix of fine directional spatter and a few long, thin, wildly-flung strands, not a uniform
- * dot cloud):
+ * Reads as small emphasis on the motion — "like someone's spitting at you when they're
+ * talking," per the user's own description (docs/work/pose-pipeline.md Round 17) — NOT a
+ * dramatic fling: mostly small dots close to the stroke, with the odd longer streak, rather
+ * than either a uniform noise cloud (Round 15/16's original problem) or a wide, far-flung
+ * spray (Round 16's overcorrection). Two things give it character without overdoing the scale:
  *
  * 1. Each droplet's own flung direction is randomly rotated off the emitter's exact velocity
- *    direction, by an angle that grows with speed — real spatter fans out chaotically under
- *    momentum and surface tension, it doesn't all travel in one perfectly uniform line. Built
- *    as a cone around `dir` using an arbitrary perpendicular basis (`cross()`, same trick
- *    generateChainMarks uses for lane offsets): `chaosTheta` picks how far off-axis, `chaosPhi`
- *    picks which way around the cone.
- * 2. A minority of droplets per emission roll as long, thin "strands" (both longer AND flung
- *    further than a normal droplet) rather than every droplet just being a scaled-up dot —
- *    mimicking the whip-like flung lines actually visible in real spatter, alongside the
- *    smaller round droplets.
+ *    direction, by a modest angle that grows with speed — real spatter fans out a little under
+ *    momentum, it doesn't all travel in one perfectly uniform line. Built as a cone around
+ *    `dir` using an arbitrary perpendicular basis (`cross()`, same trick generateChainMarks
+ *    uses for lane offsets): `chaosTheta` picks how far off-axis, `chaosPhi` picks which way
+ *    around the cone.
+ * 2. A small minority of droplets per emission roll as longer, thinner "streaks" instead of a
+ *    small round dot — most droplets stay dots.
  */
 export function generateSpeckles(emitters: Emitter[], frame: number, style: SpeckleStyle): Stroke[] {
   const speckles: Stroke[] = [];
@@ -460,14 +496,12 @@ export function generateSpeckles(emitters: Emitter[], frame: number, style: Spec
     perpA = [perpA[0] / perpALen, perpA[1] / perpALen, perpA[2] / perpALen];
     const perpB = cross(dir, perpA); // already unit — dir and perpA are orthonormal
 
-    // A gentle fling barely above threshold stays a tight, small spray; a violent one throws
-    // fewer-but-bigger, more visibly stretched droplets further out — "accentuated... dragged
-    // out a little," the same shape the main strokes' render-length change follows above.
-    const elongation = 1 + speedRatio * 1.6;
+    // Kept modest at every speed — this is "a little pizazz," not a fling. See the module doc
+    // comment: Round 16's version threw droplets far too dramatically far and elongated.
+    const elongation = 1 + speedRatio * 0.4;
     // How far off the true velocity direction a droplet's OWN flung direction can wander — the
-    // chaotic fan, not a positional jitter. Modest even at low speed (real spatter always fans
-    // out some), much wider at high speed.
-    const maxChaosAngle = 0.25 + speedRatio * 0.7;
+    // chaotic fan, not a positional jitter. Small even at high speed.
+    const maxChaosAngle = 0.15 + speedRatio * 0.35;
 
     for (let k = 0; k < count; k++) {
       const seed = frame * 97.13 + i * 13.7 + k * 7.31;
@@ -487,11 +521,13 @@ export function generateSpeckles(emitters: Emitter[], frame: number, style: Spec
         dir[2] * cosT + (perpA[2] * Math.cos(chaosPhi) + perpB[2] * Math.sin(chaosPhi)) * sinT,
       ];
 
-      // ~1 in 4 droplets is a long, thin, far-flung strand instead of a small round one.
-      const isStrand = r4 > 0.75;
-      const strandMul = isStrand ? 1.7 + r2 * 1.3 : 1;
+      // Most droplets are small dots — only about 1 in 12 rolls as a longer, thinner streak,
+      // and even that streak stays modest (Round 16 made 1 in 4 droplets a strand flung nearly
+      // twice as far, which read as too much drama for "a little pizazz").
+      const isStreak = r4 > 0.92;
+      const streakMul = isStreak ? 1.3 + r2 * 0.6 : 1;
 
-      const flingDist = style.spread * (0.5 + r1 * 1.5) * speedRatio * strandMul;
+      const flingDist = style.spread * (0.4 + r1 * 0.6) * speedRatio * streakMul;
 
       speckles.push({
         position: [
@@ -500,9 +536,9 @@ export function generateSpeckles(emitters: Emitter[], frame: number, style: Spec
           e.position[2] + flungDir[2] * flingDist,
         ],
         velocity: flungDir,
-        length: style.sizeScale * (0.5 + r1 * 0.6) * elongation * strandMul,
-        width: (style.sizeScale * (0.3 + r2 * 0.4) * (1 - speedRatio * 0.2)) / (isStrand ? strandMul * 0.6 : 1),
-        volume: (0.04 + r1 * 0.06) * (1 + speedRatio * 0.6),
+        length: style.sizeScale * (0.5 + r1 * 0.6) * elongation * streakMul,
+        width: (style.sizeScale * (0.3 + r2 * 0.4) * (1 - speedRatio * 0.15)) / (isStreak ? streakMul * 0.7 : 1),
+        volume: (0.04 + r1 * 0.06) * (1 + speedRatio * 0.4),
         color: style.color,
         seed,
       });

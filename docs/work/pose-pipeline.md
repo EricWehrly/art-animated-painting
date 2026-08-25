@@ -864,3 +864,67 @@ speckle crop at the same frame shows a genuinely chaotic fan of varied-length, v
 strands radiating off the limb's edge, not a uniform radial dot cloud. swatch.html and
 compare.html (BASE_STYLE/variant labels updated to the new motion defaults) both load with no
 console errors.
+
+### Round 17: speckles overshot into drama, motion's meaning inverted, and a real displacement bug
+
+User's framing this round, from a hand-annotated screenshot (a red box around a small cluster
+of marks floating visibly detached from a limb) plus direct feedback on Round 16's result:
+
+1. **A real bug, not a matter of taste**: "some angles are still getting these parts that
+   wound up getting drawn very strangely" — marks rendering visibly disconnected from their
+   limb, not merely displaced.
+2. **Speckles overcorrected**: "I do want mostly dots... like someone's spitting at you when
+   they're talking. It's extra emphasis from the movement... they're projected so far out now.
+   That's too much. It should just be a little pizazz." Round 16 fixed the "uniform noise
+   cloud" complaint by adding directional chaos and elongated strands, but pushed distance,
+   elongation, and strand frequency (1 in 4 droplets) all too far in the other direction.
+3. **Motion's whole effect should invert**: "lower motion on the relative bones = smoother,
+   more even, well-distributed strokes. I want the ones with more movement to be quicker,
+   shallower, more uneven, dynamic." Every round through 16 had motion make strokes BOLDER
+   (more width, more volume, more length) — the user is asking for the opposite: calm bones
+   should read orderly and consistent, energetic bones should read thin, quick, and erratic.
+
+**The displacement bug: a global constant colliding with a local size.** `walkLength` (Round
+15's fix) is derived from the STYLE's `stepLength`, a single value shared by every bone in the
+figure. `containmentPull`'s soft correction pulls the walked position back toward its ideal
+track by a fixed fraction each step — but on a short bone (hand, foot) or after an unlucky run
+of wobble draws, one step's `walkLength` can be large relative to THAT segment's own size, and
+the soft correction alone doesn't scale down to compensate. The result: a mark rendering
+visibly adrift from its limb, exactly what the user's red box shows. Fixed with a hard safety
+net on top of the soft one: after computing the corrected anchor, its distance from the lane's
+ideal track is clamped to at most `max(localWidth * 2, 0.3)` world units — generous enough that
+normal wobble character is untouched, but a pathological outlier can no longer render detached
+from its region, full stop.
+
+**Motion inverted: a fast pass is thinner and shakier, not bolder.** Introduced one reusable
+signal, `motionIntensity` (0 at rest, 1 once `forceBlend` saturates `maxMotionForce`), computed
+early in the step loop and threaded through everything that used to respond to raw `speed`:
+
+- The wobble random walk's own step size now scales with `motionIntensity` (`0.35` to `1.75`×
+  the base `wobbleAngle`) instead of being a fixed magnitude everywhere — a calm bone wobbles
+  gently (smoother, more even), a fast one wobbles hard (more uneven, dynamic).
+- `pressureNoise`'s magnitude scales the same way — "well-distributed" at rest, genuinely
+  uneven under motion, not a constant amount of noise regardless of speed.
+- `containmentPull` loosens slightly with `motionIntensity` (0.75 at rest down to 0.55 at full
+  motion) — calm passes stay orderly, fast ones get more freedom to wander (still bounded by
+  the hard clamp above).
+- Width and volume FLIP from Round 15/16's "bolder with force" to "thinner and shallower with
+  force" (`width *= 1 - motionIntensity * 0.35`; `volume` drops from a 0.2 base toward a 0.05
+  floor as `motionIntensity` rises) — a quick, grazing pass doesn't have time to lay down as
+  much paint as a slow, deliberate one. `BoneStrokeStyle.volumeScale`'s doc comment updated to
+  describe this inverted role.
+
+**Speckles pulled back toward restraint.** Distance (`spread` 0.7→0.35, and the per-droplet
+fling-distance formula's own multiplier softened), elongation (`1 + speedRatio*1.6` →
+`1 + speedRatio*0.4`), the chaos cone (`maxChaosAngle` roughly halved), and the "streak" chance
+(1 in 4 droplets → roughly 1 in 12, and less extreme when it does roll) were all reduced — same
+underlying mechanism as Round 16 (directional chaos, occasional elongated droplets), tuned down
+to "a little pizazz," most droplets staying small dots close to the stroke.
+
+Verified: solo dancer at rest visibly reads smoother/calmer than Round 16 — less crosshatched
+texture, more even coverage. Frame 51 (motion on, both dancers) shows the faster dancer reading
+thinner and more textured/uneven rather than bolder, with speckles now a subtle scatter of small
+dots hugging the limb edges instead of long visible strands. Swept several additional poses
+(frames 100, 180 — both include close arm/torso overlap between the two dancers, the kind of
+pose likely to stress the displacement fix) with no detached floating clusters found in any of
+them. swatch.html and compare.html both load with no console errors.

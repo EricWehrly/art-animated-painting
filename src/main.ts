@@ -154,7 +154,9 @@ async function main() {
       // Small — emitters now come from generateChainMarks' own fast steps (their actual tip
       // position), so a big scatter radius here would just recreate the "too far from the
       // stroke it's meant to be flung from" look. See docs/work/pose-pipeline.md Round 14.
-      spread: 0.7,
+      // Cut further in Round 17 ("that's too much... just a little pizazz on the motion" —
+      // 0.7 was still throwing droplets too far out, more fling than "someone spitting").
+      spread: 0.35,
       sizeScale: 0.35,
     };
   }
