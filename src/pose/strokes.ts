@@ -259,7 +259,11 @@ export function generateChainMarks(
         for (let step = 0; step < numSteps; step++) {
           const stepId = laneSeed * 7 + step * 13;
           const tBase = (step + 0.5) / numSteps;
-          const tJitter = (hash(stepId) - 0.5) * (1 / numSteps) * 0.5;
+          // Widened from 0.5 — narrow along-position jitter is part of why evenly-spaced marks
+          // read as "made out of repeating sections" (see Round 18); steps are independent
+          // marks, not a sequence that needs to stay strictly ordered, so a wider spread here
+          // costs nothing structurally.
+          const tJitter = (hash(stepId) - 0.5) * (1 / numSteps) * 0.9;
           const t = Math.max(0, Math.min(1, tBase + tJitter));
 
           const localWidth = width0 * (1 - t) + width1 * t;
@@ -310,13 +314,43 @@ export function generateChainMarks(
           const velDir = speed > 1e-4 ? normalize(velocity) : baseHeading;
 
           // Motion layered on top of the base wobbling heading, not instead of it.
-          const heading = normalize([
+          let heading = normalize([
             baseHeading[0] * (1 - forceBlend) + velDir[0] * forceBlend,
             baseHeading[1] * (1 - forceBlend) + velDir[1] * forceBlend,
             baseHeading[2] * (1 - forceBlend) + velDir[2] * forceBlend,
           ]);
+          // A limb's own instantaneous velocity is very often close to PERPENDICULAR to its
+          // bone (that's what rotating around a joint looks like), so blending heading toward
+          // raw velDir can swing a mark's rendered orientation most of the way to perpendicular
+          // — which renders as a short crossbar laid ACROSS the limb, not a stroke ALONG it.
+          // Stacked across several nearby marks this is what the user's screenshot showed as
+          // strokes "pirouetting around the bone," an "H"/ladder pattern instead of a
+          // recognizable arm. Clamping heading's angle from the bone tangent — regardless of
+          // how strongly wobble or motion pushed it there — keeps every mark reading as part of
+          // the limb it belongs to; motion can still visibly lean a stroke, just never flip it
+          // sideways across the limb. See docs/work/pose-pipeline.md Round 18.
+          const maxHeadingDeviation = 0.85; // radians, ~49 degrees
+          const alongBone = heading[0] * segDir[0] + heading[1] * segDir[1] + heading[2] * segDir[2];
+          if (alongBone < Math.cos(maxHeadingDeviation)) {
+            const crossComponent: [number, number, number] = [
+              heading[0] - segDir[0] * alongBone,
+              heading[1] - segDir[1] * alongBone,
+              heading[2] - segDir[2] * alongBone,
+            ];
+            const crossLen = Math.hypot(crossComponent[0], crossComponent[1], crossComponent[2]) || 1;
+            const cosMax = Math.cos(maxHeadingDeviation);
+            const sinMax = Math.sin(maxHeadingDeviation);
+            heading = [
+              segDir[0] * cosMax + (crossComponent[0] / crossLen) * sinMax,
+              segDir[1] * cosMax + (crossComponent[1] / crossLen) * sinMax,
+              segDir[2] * cosMax + (crossComponent[2] / crossLen) * sinMax,
+            ];
+          }
 
-          const lengthJitter = 0.8 + hash(stepId + 0.67) * 0.4;
+          // Widened from a narrow 0.8-1.2 range — part of the "look repetitive... made out of
+          // repeating sections" fix (see Round 18): uniform mark sizes read as manufactured
+          // segments, not hand-applied paint, even when placement/angle stay calm and even.
+          const lengthJitter = 0.6 + hash(stepId + 0.67) * 0.8;
           // walkLength (how far the brush's own hand actually travels this step) is
           // deliberately NOT motion-smeared — only renderLength (the visible mark) is. Using
           // one smeared value for both was Round 14's real bug: a fast step didn't just draw a
@@ -377,8 +411,12 @@ export function generateChainMarks(
           const dryWidthMul = style.dryWidthFactor + (1 - style.dryWidthFactor) * loadFrac;
           const dryVolumeMul = style.dryVolumeFactor + (1 - style.dryVolumeFactor) * loadFrac;
           // Pressure unevenness itself grows with motion too — "well-distributed" at rest,
-          // "more uneven" under motion, not a fixed wobble regardless of speed.
-          const pressureNoise = 1 + style.pressureVariance * (0.3 + motionIntensity * 0.7) * (hash(stepId + 0.87) * 2 - 1);
+          // "more uneven" under motion, not a fixed wobble regardless of speed. Floor raised
+          // from 0.3 (Round 18) — even calm, even coverage should still have real per-mark
+          // size variety; an even FLOW of strokes isn't the same as identical strokes, and the
+          // old floor left too little size variation at rest, part of the "repeating sections"
+          // look.
+          const pressureNoise = 1 + style.pressureVariance * (0.45 + motionIntensity * 0.55) * (hash(stepId + 0.87) * 2 - 1);
 
           // Motion makes a stroke QUICKER and SHALLOWER, not bolder — a fast, grazing pass
           // doesn't have time to lay down as much paint as a slow, deliberate one. Inverted

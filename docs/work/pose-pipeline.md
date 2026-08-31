@@ -928,3 +928,57 @@ dots hugging the limb edges instead of long visible strands. Swept several addit
 (frames 100, 180 — both include close arm/torso overlap between the two dancers, the kind of
 pose likely to stress the displacement fix) with no detached floating clusters found in any of
 them. swatch.html and compare.html both load with no console errors.
+
+### Round 18: strokes "pirouetting around the bone," repeating-looking heads, and speckles still too dramatic
+
+User's framing this round, from an annotated screenshot with two boxes: one around a small
+cluster of marks in the middle of a torso forming an "H"/ladder shape, one around a leg reading
+as uniform ribbed segments. Direct quotes: "you see the strokes like pirouette around the bone
+or something. It's bizarre." / "a lot of frames at our default values the strokes predictably
+look repetitive... look at the heads... They look like they're made out of repeating sections."
+Also, on speckles (a follow-up after Round 17's restraint pass): still "mostly dots" wanted, "a
+little pizazz," not yet subtle enough. And a closing structural note: "if you know you're
+painting an arm, you'll paint that arm contiguously. Gaps are weird, but they're a symptom of
+how the strokes are being mapped."
+
+**The "pirouette"/H-pattern: motion could rotate a mark's rendered orientation most of the way
+to perpendicular.** A limb's own instantaneous velocity is very often close to perpendicular to
+its bone — that's what rotating around a joint looks like. `heading` was a straight linear blend
+between the bone-aligned `baseHeading` and raw `velDir` weighted by `forceBlend` (up to
+`maxMotionForce`, 0.55), with no cap on the RESULTING angle relative to the bone itself. When
+velocity happened to be roughly perpendicular, a heavily-blended mark could render as a short
+crossbar laid ACROSS the limb rather than a stroke along it — stacked with nearby more
+axial marks, that's exactly the "H"/ladder look, and it directly undercuts "you'll paint that
+arm contiguously." Fixed with an explicit angular clamp: after computing the blended `heading`,
+its angle from the bone tangent (`segDir`) is measured and, if it exceeds `~49°`, rotated back
+to exactly that boundary — preserving which way it was leaning, just capping how far. This is
+independent of wobble or motion strength: no matter how hard either pushes, a mark can lean
+under motion but can never render sideways across its own limb.
+
+**"Repeating sections": several jitter ranges were narrower than they needed to be.** Per-mark
+length varied only 0.8–1.2× nominal; along-bone placement (`tJitter`) only wandered ±25% of a
+step's own spacing; pressure-driven width/volume noise had a floor multiplier of 0.3 even at
+rest. None of these were WRONG, individually, but stacked together they meant every mark in a
+short, low-lane-count region (a neck, a forearm) looked close enough in size, spacing, and
+shading phase to read as manufactured rather than hand-applied — "smooth and even" (Round 17's
+goal) had drifted into "uniform." Widened: length jitter to 0.6–1.4×, `tJitter` to ±45% of step
+spacing, and the pressure-noise floor from 0.3 to 0.45 — real variety even at a calm, evenly-
+covered baseline, which isn't the same thing as identical strokes.
+
+Speckles weren't touched this round — the user's message this time was entirely about stroke
+placement/angle and variety, not spatter (Round 17 already addressed the "too dramatic" feedback
+on speckles specifically).
+
+Verified: swept several poses (frames 445 and a zoomed crop of it, the region nearest the
+originally-reported transition) for the H/ladder pattern — none found; strokes read as leaning
+under motion, not crossing the limb. A zoomed neck/head crop at rest shows visibly more organic
+width and spacing variation than prior rounds, no longer a uniform ribbed column. swatch.html
+and compare.html both load with no console errors.
+
+**Not separately chased this round**: the closing "gaps are weird, but they're a symptom of how
+the strokes are being mapped" comment — no NEW gap was shown in this round's screenshot (Round
+16 already fixed the specific coverage/length coupling bug), and the angular clamp above should,
+if anything, improve coverage reliability further (a mark that can't point wildly off-axis is
+less likely to waste its length painting away from where it's needed). Read as a summary
+reflection on the underlying approach rather than a new concrete symptom to fix; worth watching
+for a specific recurrence rather than pre-emptively changing more before that.
