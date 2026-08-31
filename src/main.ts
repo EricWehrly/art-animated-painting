@@ -112,8 +112,10 @@ async function main() {
       pressureVariance: params.pressureVariance,
       // Elongated relative to markWidth — a mark needs a real length-to-width ratio to read as
       // a brush gesture; close to 1:1 reads as a stamped coin/ring instead (see
-      // docs/work/pose-pipeline.md Round 13's first attempt).
-      stepLength: 1.7,
+      // docs/work/pose-pipeline.md Round 13's first attempt). Shortened from 1.7 (Round 19) —
+      // the user's own live-tweaked value, done via the strokeLengthScale slider, read better;
+      // strokeLengthScale itself stays available on top of this for further live tuning.
+      stepLength: 1.3,
       stepOverlap: 0.5,
       // A single lane's target width — how many parallel passes a limb's local width needs
       // (round(localWidth / markWidth)) is what makes a hip read as several strokes wide and

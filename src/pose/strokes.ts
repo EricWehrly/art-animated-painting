@@ -186,6 +186,26 @@ export function generateChainMarks(
       return (chain.thickness[i - 1] + chain.thickness[i]) / 2;
     });
 
+    // Static per-segment geometry, computed once up front — the loop below walks LANE-major
+    // across the whole chain (not segment-major) so a lane's paint load and wobble phase flow
+    // continuously through every joint instead of resetting at each one. A torso/neck/head
+    // chain has 5+ short segments; resetting state at each one made every segment its own
+    // self-contained, uniform-looking chunk — "8 stacked boxes," not a continuously painted
+    // body. See docs/work/pose-pipeline.md Round 19.
+    interface SegmentGeo {
+      segIndex: number;
+      parentIndex: number;
+      childIndex: number;
+      segStart: [number, number, number];
+      segVec: [number, number, number];
+      segDir: [number, number, number];
+      perp: [number, number, number];
+      width0: number;
+      width1: number;
+      numLanes: number;
+      numSteps: number;
+    }
+    const segments: SegmentGeo[] = [];
     for (let segIndex = 0; segIndex < chain.jointPath.length - 1; segIndex++) {
       const parentIndex = chain.jointPath[segIndex];
       const childIndex = chain.jointPath[segIndex + 1];
@@ -213,9 +233,10 @@ export function generateChainMarks(
 
       const width0 = jointThickness[segIndex] * style.widthScale;
       const width1 = jointThickness[segIndex + 1] * style.widthScale;
-      // One lane COUNT per whole segment (from its mid-length width), not re-derived per step
-      // — a lane is a single simulated brush pass with state (paint load, wobble) that
-      // persists down the segment, so the number of lanes can't change partway through it.
+      // One lane COUNT per whole segment (from its mid-length width) — a lane's SHAPE can
+      // still vary segment to segment (a chain tapering from thigh to shin), only its
+      // persistent STATE (paint load, wobble, position) now carries across that boundary
+      // instead of resetting.
       const numLanes = Math.max(1, Math.round(((width0 + width1) / 2) / style.markWidth));
 
       // Anchor DENSITY (how many steps a lane gets) is a coverage requirement — "the entire
@@ -234,27 +255,43 @@ export function generateChainMarks(
       // miss there is a visible gap at the joint.
       const numSteps = Math.max(2, Math.round(segLen / stepSpacing));
 
-      for (let lane = 0; lane < numLanes; lane++) {
-        const laneT = numLanes === 1 ? 0.5 : (lane + 0.5) / numLanes;
-        const laneSeed = chainIndex * 100000 + segIndex * 677 + lane * 131;
+      segments.push({ segIndex, parentIndex, childIndex, segStart, segVec, segDir, perp, width0, width1, numLanes, numSteps });
+    }
 
-        // Persistent per-lane-pass state, carried across this segment's steps: a fresh paint
-        // load (see the module doc comment), a small initial wobble offset, and the brush's
-        // own actual position — which now WALKS under the wobbling heading below rather than
-        // snapping back to a geometrically-ideal point every step. A wobble that only tilted
-        // each independently-placed mark, without letting it actually carry the anchor
-        // sideways, barely read as shakiness — real hand tremor moves where the brush IS, not
-        // just which way it's pointed.
-        let paintLoad = 0.85 + hash(laneSeed + 0.11) * 0.15;
-        // Small initial offset, not a full-magnitude one — the very first step has had no
-        // chance yet to be pulled back by containmentPull below, so starting near the tangent
-        // is what keeps a pass beginning right at its joint instead of visibly missing it.
-        let wobble = (hash(laneSeed + 0.23) - 0.5) * style.wobbleAngle * 0.3;
-        let passPos: [number, number, number] = [
-          segStart[0] + perp[0] * (laneT - 0.5) * width0,
-          segStart[1] + perp[1] * (laneT - 0.5) * width0,
-          segStart[2] + perp[2] * (laneT - 0.5) * width0,
-        ];
+    const maxLanes = segments.reduce((m, s) => Math.max(m, s.numLanes), 1);
+
+    for (let lane = 0; lane < maxLanes; lane++) {
+      const laneSeedBase = chainIndex * 100000 + lane * 131;
+
+      // Persistent per-lane-pass state, now carried across the WHOLE CHAIN's segments, not
+      // reset at each joint: a fresh paint load (see the module doc comment), a small initial
+      // wobble offset, and the brush's own actual position — which WALKS under the wobbling
+      // heading below rather than snapping back to a geometrically-ideal point every step. A
+      // wobble that only tilted each independently-placed mark, without letting it actually
+      // carry the anchor sideways, barely read as shakiness — real hand tremor moves where the
+      // brush IS, not just which way it's pointed.
+      let paintLoad = 0.85 + hash(laneSeedBase + 0.11) * 0.15;
+      // Small initial offset, not a full-magnitude one — the very first step has had no
+      // chance yet to be pulled back by containmentPull below, so starting near the tangent
+      // is what keeps a pass beginning right at its joint instead of visibly missing it.
+      let wobble = (hash(laneSeedBase + 0.23) - 0.5) * style.wobbleAngle * 0.3;
+      let passPos: [number, number, number] | null = null;
+
+      for (const seg of segments) {
+        // A joint this lane's own width doesn't reach at all (e.g. lane 2 of 3 on a segment
+        // that's only wide enough for 1) — skip placing marks here, but leave paintLoad/wobble
+        // untouched so they pick back up unchanged at the next segment that does need this lane.
+        if (lane >= seg.numLanes) continue;
+        const { segIndex, parentIndex, childIndex, segStart, segVec, segDir, perp, width0, width1, numLanes, numSteps } = seg;
+        const laneT = numLanes === 1 ? 0.5 : (lane + 0.5) / numLanes;
+        if (passPos === null) {
+          passPos = [
+            segStart[0] + perp[0] * (laneT - 0.5) * width0,
+            segStart[1] + perp[1] * (laneT - 0.5) * width0,
+            segStart[2] + perp[2] * (laneT - 0.5) * width0,
+          ];
+        }
+        const laneSeed = laneSeedBase + segIndex * 677;
 
         for (let step = 0; step < numSteps; step++) {
           const stepId = laneSeed * 7 + step * 13;
@@ -313,11 +350,22 @@ export function generateChainMarks(
 
           const velDir = speed > 1e-4 ? normalize(velocity) : baseHeading;
 
+          // Nearby steps within one short segment sample very similar velocity (same bone,
+          // same frame, close t) — with forceBlend applied uniformly, EVERY mark in that
+          // segment leaned the same amount toward the same near-perpendicular direction,
+          // reading as a uniform "comb" of parallel diagonal marks (still visible at frame 391
+          // even after the maxHeadingDeviation clamp below — see docs/work/pose-pipeline.md
+          // Round 19). A real hand doesn't "catch" a gesture's force with perfect uniformity
+          // stroke to stroke; jittering how much of the available forceBlend actually lands on
+          // THIS mark breaks that unison up without changing the average response to motion.
+          const catchJitter = 0.2 + hash(stepId + 1.21) * 0.8;
+          const effectiveForceBlend = forceBlend * catchJitter;
+
           // Motion layered on top of the base wobbling heading, not instead of it.
           let heading = normalize([
-            baseHeading[0] * (1 - forceBlend) + velDir[0] * forceBlend,
-            baseHeading[1] * (1 - forceBlend) + velDir[1] * forceBlend,
-            baseHeading[2] * (1 - forceBlend) + velDir[2] * forceBlend,
+            baseHeading[0] * (1 - effectiveForceBlend) + velDir[0] * effectiveForceBlend,
+            baseHeading[1] * (1 - effectiveForceBlend) + velDir[1] * effectiveForceBlend,
+            baseHeading[2] * (1 - effectiveForceBlend) + velDir[2] * effectiveForceBlend,
           ]);
           // A limb's own instantaneous velocity is very often close to PERPENDICULAR to its
           // bone (that's what rotating around a joint looks like), so blending heading toward
@@ -328,8 +376,14 @@ export function generateChainMarks(
           // recognizable arm. Clamping heading's angle from the bone tangent — regardless of
           // how strongly wobble or motion pushed it there — keeps every mark reading as part of
           // the limb it belongs to; motion can still visibly lean a stroke, just never flip it
-          // sideways across the limb. See docs/work/pose-pipeline.md Round 18.
-          const maxHeadingDeviation = 0.85; // radians, ~49 degrees
+          // sideways across the limb. Tightened from 49° (Round 18) to 22° (Round 19): a rigid
+          // rotating bone has correlated velocity DIRECTION along its whole length (only the
+          // magnitude varies with distance from the joint), so catchJitter varies how far each
+          // mark leans but not which way — every mark on a fast-rotating bone still leans the
+          // same direction, just by different amounts. 35° wasn't a firm enough ceiling on that
+          // correlated lean to stop it reading as a combed/sideways look; 22° still visibly
+          // responds to motion without crossing into "looks like a crossbar."
+          const maxHeadingDeviation = 0.38; // radians, ~22 degrees
           const alongBone = heading[0] * segDir[0] + heading[1] * segDir[1] + heading[2] * segDir[2];
           if (alongBone < Math.cos(maxHeadingDeviation)) {
             const crossComponent: [number, number, number] = [

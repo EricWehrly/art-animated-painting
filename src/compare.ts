@@ -23,7 +23,7 @@ const BASE_STYLE: Omit<BoneStrokeStyle, "color"> = {
   lengthScale: 1,
   volumeScale: 0.35,
   pressureVariance: 0.5,
-  stepLength: 1.7,
+  stepLength: 1.3,
   stepOverlap: 0.5,
   markWidth: 0.8,
   wobbleAngle: 0.35,

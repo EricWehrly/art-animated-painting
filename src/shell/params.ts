@@ -47,7 +47,9 @@ export const defaultParams: ToyParams = {
   reliefStrength: 22,
   strokeWidthScale: 1,
   strokeLengthScale: 1,
-  cameraDistance: 55,
+  // Zoomed in from 55 (Round 19) — the couple can dance partly in and out of frame at this
+  // distance, which reads better than always fitting both fully in view.
+  cameraDistance: 30,
   targetX: 0,
   targetY: 15,
   targetZ: 0,

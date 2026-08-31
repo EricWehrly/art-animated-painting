@@ -982,3 +982,63 @@ if anything, improve coverage reliability further (a mark that can't point wildl
 less likely to waste its length painting away from where it's needed). Read as a summary
 reflection on the underlying approach rather than a new concrete symptom to fix; worth watching
 for a specific recurrence rather than pre-emptively changing more before that.
+
+### Round 19: per-segment state resets were the real cause of "stacked boxes," a napkin-math
+approach to finding worst-case frames, and the comb pattern needed more than one fix
+
+User's framing this round: positive on Round 18 ("good work"), had live-tweaked strokes shorter
+via the params panel and preferred it. Flagged frame 391 as still showing the arm issue despite
+Round 18's angular clamp, and suggested a concrete process improvement: "we can probably do a
+quick bit of scanning and napkin math to figure out where the most extreme extent to check
+would be, yeah?" — instead of guessing frames by eye. The main structural ask: "both the head
+and torsos on both bodies look like stacked boxes. So 8 stacked boxes per frame... These should
+look like bodies... let's figure out why we've got that gap and try something different, towards
+looking like someone painting shadows." Also: default camera zoomed in a bit ("distance 30...
+they can dance in and out of frame a bit").
+
+**Napkin math, done as asked.** Wrote a small script over the raw pose cache (central-difference
+speed per joint per frame, same formula `sampleBoneAtT` already uses, maxed across every joint
+and both dancers) to rank frames by worst-case motion instead of guessing. Result: frame 391
+ISN'T a peak-motion frame at all (max joint speed ~1.6, versus ~4.2–4.8 at the actual top
+frames, e.g. 426–428 on `LeftForeArm`) — and the single highest-speed joint in the whole dataset
+(frame 1, `RightHandIndex1_End`) is a finger bone, which chains/strokes never touch (dropped by
+`isFingerBone`). That ruled out "frame 391 has unusually extreme motion" as the explanation and
+pointed at something structural instead — confirmed below.
+
+**The "8 stacked boxes": each short segment reset its lane's state from scratch.** A chain's
+lane (paint load, wobble phase, walked position) was scoped to ONE segment's inner loop —
+starting fresh every time the outer loop moved to the next bone. The spine+neck+head chain has
+5+ segments, several of them short (a vertebra is much shorter than a thigh); resetting to a
+fresh, full paint load and a near-zero wobble phase at every one of those short joints is
+exactly what makes each segment its own self-contained, uniform-looking block — "8 stacked
+boxes" is a fair description of 5+ vertebra segments each independently starting clean. Fixed
+by restructuring `generateChainMarks` to precompute each segment's static geometry once, then
+walk LANE-major across the WHOLE chain: one lane's paint load and wobble now flow continuously
+through every joint in the chain, only pausing (not resetting) through a segment too narrow to
+need that many lanes. A vertebra segment's steps now pick up mid-cycle from wherever the
+previous segment's lane left off, instead of starting over.
+
+**The arm issue at frame 391 needed a second, different fix.** The chain-continuity fix alone
+didn't resolve it — reasonable, since the arm's issue wasn't a segment-reset boundary artifact
+at all. Diagnosis: a rigid bone rotating around its joint has correlated velocity DIRECTION
+along its whole length (a physical fact — only the speed varies with distance from the joint),
+so every step sampled along that one short segment blends toward nearly the same
+near-perpendicular direction. Round 18's 49° clamp let each of those correlated marks lean the
+same way by nearly the same amount, reading as a uniform "comb" of parallel diagonal strokes —
+different failure mode than the "H"/crossing pattern Round 18 targeted, but visually similar in
+spirit (motion pulling marks too far off the bone's own axis). Two changes: a `catchJitter`
+that randomizes how much of the available motion-blend actually reaches any one mark (0.2×–1.0×,
+so nearby marks lean by different AMOUNTS even toward the same direction), and tightening
+`maxHeadingDeviation` further, from 49° (Round 18) to 22° — the jitter alone wasn't a firm
+enough ceiling on a fully-correlated lean; the clamp is what actually guarantees it.
+
+Also: `stepLength` shortened from 1.7 to 1.3 (matching the user's own live-tweaked preference —
+`strokeLengthScale` remains available on top for further live tuning) and `defaultParams.
+cameraDistance` from 55 to 30.
+
+Verified: a zoomed neck/head crop at rest now reads as one continuous flowing column, no visible
+hard boundaries at any vertebra. Frame 391 re-checked after both the continuity fix (arm issue
+persisted) and the catch-jitter/tighter-clamp fix (arm now reads as a natural motion streak,
+not a rigid crossbar comb). Fresh default load (no saved hash) at frame 150 confirms the
+zoomed-in default framing — both dancers close, legs extending past the bottom edge, matching
+"dance in and out of frame." swatch.html and compare.html both load with no console errors.
