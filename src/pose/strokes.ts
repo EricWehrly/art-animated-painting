@@ -295,12 +295,20 @@ export function generateChainMarks(
 
         for (let step = 0; step < numSteps; step++) {
           const stepId = laneSeed * 7 + step * 13;
-          const tBase = (step + 0.5) / numSteps;
-          // Widened from 0.5 — narrow along-position jitter is part of why evenly-spaced marks
-          // read as "made out of repeating sections" (see Round 18); steps are independent
-          // marks, not a sequence that needs to stay strictly ordered, so a wider spread here
-          // costs nothing structurally.
-          const tJitter = (hash(stepId) - 0.5) * (1 / numSteps) * 0.9;
+          // Inclusive of both ends (0 and 1), not centered within each slot — a centered
+          // distribution left the FIRST step's nominal position half a slot inward from the
+          // joint, and the LAST step's half a slot short of the next one, on every single
+          // segment. That's a real, structural gap at every joint, not a probabilistic risk —
+          // the user's annotated screenshot showed it recurring at essentially every vertebra,
+          // matching "stacked/repeating." Anchoring the endpoints exactly at t=0 and t=1
+          // guarantees a mark's placement reaches every joint, for every lane, by construction.
+          // See docs/work/pose-pipeline.md Round 20.
+          const tBase = numSteps === 1 ? 0.5 : step / (numSteps - 1);
+          // No jitter on the two endpoint steps — jitter could still nudge them away from the
+          // joint they're guaranteeing coverage for, turning the guarantee back into a
+          // probability. Interior steps keep the jitter (organic spacing, see Round 18).
+          const isEndpoint = numSteps > 1 && (step === 0 || step === numSteps - 1);
+          const tJitter = isEndpoint ? 0 : (hash(stepId) - 0.5) * (1 / numSteps) * 0.9;
           const t = Math.max(0, Math.min(1, tBase + tJitter));
 
           const localWidth = width0 * (1 - t) + width1 * t;
@@ -619,7 +627,9 @@ export function generateSpeckles(emitters: Emitter[], frame: number, style: Spec
       const isStreak = r4 > 0.92;
       const streakMul = isStreak ? 1.3 + r2 * 0.6 : 1;
 
-      const flingDist = style.spread * (0.4 + r1 * 0.6) * speedRatio * streakMul;
+      // A bit further out than Round 17's very tight version — "favor more being disconnected
+      // from the strokes, like they've been spat. Not too far" (Round 20).
+      const flingDist = style.spread * (0.6 + r1 * 0.9) * speedRatio * streakMul;
 
       speckles.push({
         position: [
@@ -628,8 +638,11 @@ export function generateSpeckles(emitters: Emitter[], frame: number, style: Spec
           e.position[2] + flungDir[2] * flingDist,
         ],
         velocity: flungDir,
-        length: style.sizeScale * (0.5 + r1 * 0.6) * elongation * streakMul,
-        width: (style.sizeScale * (0.3 + r2 * 0.4) * (1 - speedRatio * 0.15)) / (isStreak ? streakMul * 0.7 : 1),
+        // Widened size range — "they should vary... a bit bigger [on average], varying amounts
+        // smaller [too]" (Round 20): more real spread between tiny dots and notably larger
+        // ones, not every droplet clustered near one size.
+        length: style.sizeScale * (0.3 + r1 * 1.3) * elongation * streakMul,
+        width: (style.sizeScale * (0.2 + r2 * 0.7) * (1 - speedRatio * 0.15)) / (isStreak ? streakMul * 0.7 : 1),
         volume: (0.04 + r1 * 0.06) * (1 + speedRatio * 0.4),
         color: style.color,
         seed,

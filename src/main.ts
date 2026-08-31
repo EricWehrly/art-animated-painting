@@ -157,9 +157,13 @@ async function main() {
       // position), so a big scatter radius here would just recreate the "too far from the
       // stroke it's meant to be flung from" look. See docs/work/pose-pipeline.md Round 14.
       // Cut further in Round 17 ("that's too much... just a little pizazz on the motion" —
-      // 0.7 was still throwing droplets too far out, more fling than "someone spitting").
-      spread: 0.35,
-      sizeScale: 0.35,
+      // 0.7 was still throwing droplets too far out, more fling than "someone spitting"), then
+      // nudged back up slightly in Round 20 ("favor more being disconnected from the
+      // strokes... not too far") — 0.35 had swung a bit too far the other way.
+      spread: 0.45,
+      // Bumped slightly — Round 20's "about the length they are, bit bigger" — the per-droplet
+      // size formula itself now varies much more widely around this base (see generateSpeckles).
+      sizeScale: 0.4,
     };
   }
 

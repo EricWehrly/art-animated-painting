@@ -1042,3 +1042,44 @@ persisted) and the catch-jitter/tighter-clamp fix (arm now reads as a natural mo
 not a rigid crossbar comb). Fresh default load (no saved hash) at frame 150 confirms the
 zoomed-in default framing — both dancers close, legs extending past the bottom edge, matching
 "dance in and out of frame." swatch.html and compare.html both load with no console errors.
+
+### Round 20: the real gap — every step's own nominal position stopped short of the joint it
+was supposed to reach
+
+User's framing this round: positive on the paint quality, but hand-annotated the exact same
+screenshot pattern with green marks at (by eye) roughly one gap per vertebra/joint down both
+torsos — described visually as "`| ‾ |`" — and named it explicitly as the SAME "stacked/
+repeating" complaint from Round 19, meaning Round 19's chain-continuity fix (persisting a
+lane's paint load and wobble across segment boundaries) did NOT actually close these gaps, even
+though it was a real and correct fix for what it targeted. Also: speckles "aren't bad, but they
+should vary" — more separation from the stroke ("like they've been spat. Not too far"), a wider
+mix of small dots and the occasional bigger streak, rather than everything clustered near one
+size.
+
+**The actual bug: every segment's own step positions never reached t=0 or t=1.** `tBase =
+(step + 0.5) / numSteps` CENTERS each step's nominal position within its own [0,1] slot — the
+first step's nominal position sits half a slot IN from the joint, not at it, and the last step's
+sits half a slot short of the NEXT joint. This is unrelated to Round 19's fix (which was about
+whether STATE — paint load, wobble — carries across a joint, not about whether any mark's
+position ever reaches one) and happens on literally every segment of every chain, which is
+exactly why the gaps recurred in the same "one per joint" pattern the green marks show. Fixed
+by switching to an inclusive distribution — `step / (numSteps - 1)`, so the first step's
+nominal t is exactly 0 and the last is exactly 1 — and, since jitter could still nudge an
+endpoint step away from the joint it's meant to guarantee, turning off jitter specifically for
+the two endpoint steps (interior steps keep it, for the organic spacing Round 18 added). A
+guarantee by construction, not a probability improved by degrees.
+
+**Speckles nudged toward more separation and much wider size variety**, per direct numbers: fling
+distance's per-droplet multiplier raised (`0.4–1.0×` → `0.6–1.5×` of `spread`), `spread` itself
+nudged back up (0.35 → 0.45 — Round 17 had cut it from 0.7 and this round's feedback said it had
+swung a little too far), and the per-droplet length range widened substantially (`0.5–1.1×` →
+`0.3–1.6×` of `sizeScale`, width similarly), with the base `sizeScale` itself bumped slightly
+(0.35 → 0.4). Streak frequency (~1 in 12) and the chaos-cone mechanism (Round 17) both left
+unchanged — the feedback was about separation and size spread, not how often a streak occurs.
+
+Verified: re-rendered the same pose/frame region as the user's annotated screenshot (frame
+~315, both dancers, matching camera framing) — the torso/spine column reads as continuous with
+no visible notches at any joint, confirmed further with a tight zoomed crop. A separate zoomed
+crop with speckles enabled shows a visible mix of small dots and a couple of longer streaks at
+noticeably different sizes, with more visible separation from the source stroke than Round 17's
+very tight version. swatch.html and compare.html both load with no console errors.
