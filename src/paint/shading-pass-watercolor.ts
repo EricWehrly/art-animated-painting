@@ -32,6 +32,12 @@ const quadFragmentShader = /* glsl */ `
   uniform float uEdgeDarken;
   uniform float uReliefReduction;
   uniform float uDesaturation;
+  // Pigment settling unevenly (paper tooth, per the survey's "Granulation" bullet) rather
+  // than oil's smooth thickness-driven brightening — a cheap stand-in using the same grain
+  // hash the ground texture below already computes, multiplied into the paint itself instead
+  // of just the canvas. Not one of the original three named techniques, added after the first
+  // round showed oil's thickness-driven color read as too uniform once relief was flattened.
+  uniform float uGranulation;
 
   in vec2 vUv;
   out vec4 outColor;
@@ -79,21 +85,28 @@ const quadFragmentShader = /* glsl */ `
     // part of the same "muted, cooler, more transparent" description this technique covers.
     float wcCoverage = coverage * (1.0 - uDesaturation * wcMix * 0.35);
 
-    // Reduced relief: watercolor is flat/thin, not built-up impasto. Scales down both the
+    // Reduced relief: watercolor is flat/thin, not built-up impasto. Scales down the
     // normal-map strength (lighting reads flatter) and the thickness/impasto brightening bump
-    // below (paint stops looking "loaded").
+    // below (paint stops looking "loaded") — but a lower-AMPLITUDE bump sampled at the same
+    // fine spacing is still the same fine-frequency ridge pattern, so it can keep reading as
+    // brush-bristle "layering" even once dimmed. Oil strokes get that vertical ridging from
+    // stroke-mesh.ts's own per-dab bristle bumps; real watercolor washes don't have that
+    // structure at all. texelMul widens the sampling distance itself as wcMix grows, which
+    // blurs the ridge FREQUENCY (not just its lighting response) — adjacent ridges get
+    // averaged together into smooth undulation rather than staying sharp but faint.
     float reliefScale = 1.0 - uReliefReduction * wcMix;
     float effectiveRelief = uReliefStrength * reliefScale;
+    float texelMul = mix(1.0, 11.0, uReliefReduction * wcMix);
 
     float h = heightAt(vUv);
-    float hL = heightAt(vUv - vec2(uTexelSize.x, 0.0));
-    float hR = heightAt(vUv + vec2(uTexelSize.x, 0.0));
-    float hD = heightAt(vUv - vec2(0.0, uTexelSize.y));
-    float hU = heightAt(vUv + vec2(0.0, uTexelSize.y));
-    float hL2 = heightAt(vUv - vec2(uTexelSize.x * 3.0, 0.0));
-    float hR2 = heightAt(vUv + vec2(uTexelSize.x * 3.0, 0.0));
-    float hD2 = heightAt(vUv - vec2(0.0, uTexelSize.y * 3.0));
-    float hU2 = heightAt(vUv + vec2(0.0, uTexelSize.y * 3.0));
+    float hL = heightAt(vUv - vec2(uTexelSize.x * texelMul, 0.0));
+    float hR = heightAt(vUv + vec2(uTexelSize.x * texelMul, 0.0));
+    float hD = heightAt(vUv - vec2(0.0, uTexelSize.y * texelMul));
+    float hU = heightAt(vUv + vec2(0.0, uTexelSize.y * texelMul));
+    float hL2 = heightAt(vUv - vec2(uTexelSize.x * texelMul * 3.0, 0.0));
+    float hR2 = heightAt(vUv + vec2(uTexelSize.x * texelMul * 3.0, 0.0));
+    float hD2 = heightAt(vUv - vec2(0.0, uTexelSize.y * texelMul * 3.0));
+    float hU2 = heightAt(vUv + vec2(0.0, uTexelSize.y * texelMul * 3.0));
 
     vec3 normal = normalize(vec3((hL - hR) * effectiveRelief, (hD - hU) * effectiveRelief, 1.0));
 
@@ -107,16 +120,37 @@ const quadFragmentShader = /* glsl */ `
     float spec = pow(max(dot(normal, halfDir), 0.0), 18.0);
     vec3 specTint = mix(vec3(1.0), paintColor, 0.6);
 
+    // The wide-kernel AO below was, in Round 1, computed straight from the raw height field —
+    // reliefScale never reached it, so ridge-to-ridge valley shadowing kept reading as the
+    // exact same brush-bristle "layering" at every band, independent of the relief slider.
+    // Widening the taps above (texelMul) already blurs the ridge FREQUENCY feeding into this;
+    // scaling the shadow's own STRENGTH down by reliefScale on top of that removes what's left
+    // — the combination is what actually kills the striping, not either alone.
     float variance = abs(hL - h) + abs(hR - h) + abs(hU - h) + abs(hD - h);
     float wideVariance = abs(hL2 - h) + abs(hR2 - h) + abs(hU2 - h) + abs(hD2 - h);
-    float ao = 1.0 - clamp((variance * 1.4 + wideVariance * 0.5) * uAOStrength, 0.0, 0.82);
+    float ao = 1.0 - clamp((variance * 1.4 + wideVariance * 0.5) * uAOStrength * reliefScale, 0.0, 0.82);
 
     // Thickness/impasto brightening also fades with reliefScale — thinned-out watercolor
-    // shouldn't still glow with built-up-paint brightness even once the lighting normal is
-    // flattened.
+    // shouldn't still glow with built-up-paint brightness once the lighting normal is
+    // flattened. But fading STRAIGHT toward oil's own thin-paint floor (0.8x) was a bug, not a
+    // feature: it made full-mix paint read as dark and muddy rather than pale and diluted —
+    // the opposite of what thinned pigment should look like. Fade toward a neutral 1.0x
+    // instead, so watercolor's paleness comes from wcCoverage (below, letting the ground
+    // through) and desaturation, not from an accidental darkening left over from oil's own
+    // thickness ramp.
     float thickness = smoothstep(0.05, 0.85, h);
     float impasto = smoothstep(0.9, 2.2, h);
-    vec3 thickPaint = paintColor * mix(0.8, 1.25, mix(0.0, thickness, reliefScale)) + vec3(0.08) * impasto * reliefScale;
+    float thicknessMul = mix(1.0, mix(0.8, 1.25, thickness), reliefScale);
+    vec3 thickPaint = paintColor * thicknessMul + vec3(0.08) * impasto * reliefScale;
+
+    // Granulation: pigment settling unevenly rather than oil's smooth thickness-driven
+    // brightness ramp — a cheap texture multiply using the same grain hash the ground below
+    // already computes (see watercolor-aging.md's survey: "safer short-term" than inventing a
+    // second noise source ahead of watercolor-ground's real paper tooth). Coarser-scaled than
+    // the ground's own grain so it reads as blotchy pigment density, not screen noise.
+    float granulationNoise = hash21(floor(gl_FragCoord.xy * 0.12));
+    float granulation = mix(1.0, mix(0.72, 1.18, granulationNoise), uGranulation * wcMix);
+    thickPaint *= granulation;
 
     vec3 lit = thickPaint * (0.3 + 0.75 * diff) * ao + specTint * spec * 0.55 * reliefScale;
 
@@ -153,6 +187,7 @@ export interface WatercolorShadingPassHandle {
   setEdgeDarken(v: number): void;
   setReliefReduction(v: number): void;
   setDesaturation(v: number): void;
+  setGranulation(v: number): void;
 }
 
 export function createWatercolorShadingPass(): WatercolorShadingPassHandle {
@@ -174,8 +209,11 @@ export function createWatercolorShadingPass(): WatercolorShadingPassHandle {
       uAOStrength: { value: 1.6 },
       uGroundColor: { value: new THREE.Color(0x4a4032) },
       uEdgeDarken: { value: 0.6 },
-      uReliefReduction: { value: 0.7 },
+      // Raised from Round 1's 0.7 — the user's follow-up asked to push oil's built-up texture
+      // down further as paint ages; see the AO/texelMul changes above this now actually reaches.
+      uReliefReduction: { value: 0.85 },
       uDesaturation: { value: 0.6 },
+      uGranulation: { value: 0.35 },
     },
   });
 
@@ -206,6 +244,9 @@ export function createWatercolorShadingPass(): WatercolorShadingPassHandle {
     },
     setDesaturation(v) {
       material.uniforms.uDesaturation.value = v;
+    },
+    setGranulation(v) {
+      material.uniforms.uGranulation.value = v;
     },
   };
 }

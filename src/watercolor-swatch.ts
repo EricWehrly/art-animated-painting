@@ -97,10 +97,11 @@ async function main() {
 
   // Standalone-only weights, not part of ToyParams (this page is the only consumer) — same
   // pattern shell/params.ts used for the palette-preset state before its own rework.
-  const wcState = { edgeDarken: 0.6, reliefReduction: 0.7, desaturation: 0.6 };
+  const wcState = { edgeDarken: 0.6, reliefReduction: 0.85, desaturation: 0.6, granulation: 0.35 };
   pane.addBinding(wcState, "edgeDarken", { min: 0, max: 1, step: 0.05, label: "edge darken" });
   pane.addBinding(wcState, "reliefReduction", { min: 0, max: 1, step: 0.05, label: "relief reduction" });
   pane.addBinding(wcState, "desaturation", { min: 0, max: 1, step: 0.05, label: "desaturation" });
+  pane.addBinding(wcState, "granulation", { min: 0, max: 1, step: 0.05, label: "granulation" });
 
   const strokeMesh = createStrokeMesh(200);
   const heightPass = createHeightPass(domElement.width, domElement.height);
@@ -127,6 +128,7 @@ async function main() {
     shadingPass.setEdgeDarken(wcState.edgeDarken);
     shadingPass.setReliefReduction(wcState.reliefReduction);
     shadingPass.setDesaturation(wcState.desaturation);
+    shadingPass.setGranulation(wcState.granulation);
     shadingPass.render(renderer, heightPass.colorSumTexture, heightPass.heightSumTexture);
   }
 

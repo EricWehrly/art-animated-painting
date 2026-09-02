@@ -275,3 +275,55 @@ Net: the trio does read as a transition from wet oil to flat watercolor, confirm
 faked bleed. `npx tsc --noEmit` clean; no console errors in the standalone page. Integration
 (routing the real accumulator's aged stage through this treatment) is unstarted — this only
 validates the look, per the plan above.
+
+## Round 2 — push further: relief reduction wasn't reaching the part that actually reads as "oil"
+
+User's follow-up: reduce oil's own "features" more as paint ages, watercolor shouldn't keep the
+vertical texture layering, and pigment/color distribution should read differently from oil's.
+
+**Diagnosis: relief reduction only ever touched the lighting *response* to height, never the
+height field's own texture.** `uReliefReduction` scaled the normal-map amplitude and the
+thickness-brightening bump, but the AO/valley-shadow term — the wide-kernel ambient occlusion
+that reads ridge-to-ridge shadowing from stroke-mesh.ts's per-dab bristle bumps — was computed
+straight from the raw height field with fixed 1- and 3-texel taps, completely untouched by the
+slider. A dimmer-but-still-fine-frequency ridge pattern still reads as the same brush-bristle
+"layering" the user was pointing at; lowering amplitude alone doesn't remove a texture, only
+mutes it.
+
+Two changes, both scaling with the same `uReliefReduction * wcMix` term relief reduction always
+used:
+
+- **`texelMul` widens the height-sample tap distance itself** (up to 11x at full reduction),
+  which blurs the ridge *frequency* feeding into both the normal and the AO variance — adjacent
+  ridges get averaged into smooth undulation rather than staying sharp but faint.
+- **AO's shadow strength is scaled down by `reliefScale` too**, removing what widening the taps
+  alone doesn't fully catch.
+
+Neither alone was enough in testing — widened taps still left faint valley-shadow banding at
+full strength; a scaled-down AO strength on the original fine taps still traced the same fine
+ridges, just more weakly. The combination is what actually reads as flat rather than "flat but
+still striped."
+
+**A real bug found in the process: thickness-brightening's fade target was wrong.** The
+thickness→brightness ramp faded toward oil's own *thin-paint* floor (0.8x) as relief reduced,
+which is backwards — thinned, diluted pigment should look lighter, not darker. At full
+reduction this made paint read as dark and muddy rather than pale, nearly camouflaging against
+the ground once combined with `wcCoverage`'s ground bleed-through. Fixed by fading toward a
+neutral 1.0x multiplier instead of oil's dark floor — paleness now comes entirely from
+`wcCoverage` and desaturation, which is where it should come from.
+
+**Added granulation** (a 4th technique, not in the original three): a coarse grain-hash multiply
+on paint color, reusing the same hash the ground texture already computes rather than a second
+noise source — pigment settling unevenly rather than oil's smooth thickness-driven brightness,
+per the survey's "cheap" tier. Answers the user's "color distribution is a bit different" note
+more directly than the original trio did on its own.
+
+Verified by eye at the new defaults (relief reduction 0.85, granulation 0.35, edge darken and
+desaturation unchanged at 0.6): the wash pair at 100% is now genuinely flat with no visible
+ridge banding, reading as pale and soft rather than dark and muddy. Some residual longer-
+wavelength undulation remains visible on close zoom — the coarser dab-to-dab overlap structure,
+a different (larger) spatial scale than the bristle ridges the tap-widening targets, and not
+fully reachable by widening point-sampled taps without either a real blur pass (a new render
+target — medium tier, out of scope for a shader-only prototype) or pushing taps wide enough to
+risk sampling artifacts elsewhere. Flagged as an honest limit of the cheap approach rather than
+chased further this round. `npx tsc --noEmit` clean; no console errors.
