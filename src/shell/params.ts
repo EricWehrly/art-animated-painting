@@ -88,11 +88,12 @@ export function saveParamsToHash(params: ToyParams) {
   window.location.hash = encodeURIComponent(JSON.stringify(params));
 }
 
-/** Named colorA/colorB pairings offered by the "palette preset" dropdown below. UI-only
- * convenience list — not part of ToyParams, doesn't round-trip through the URL hash on its
- * own (picking one just assigns into params.colorA/colorB, which already round-trip). Future
- * work (an independent per-swatch color picker, saving custom presets, auto-loading saved
- * presets on load, a gradient-strip picker UI) would extend from this list. */
+/** Named colorA/colorB pairings offered as swatch tiles below (see the "palette preset" row
+ * built in createParamsPanel). UI-only convenience list — not part of ToyParams, doesn't
+ * round-trip through the URL hash on its own (picking one just assigns into
+ * params.colorA/colorB, which already round-trip). Future work (an independent per-swatch
+ * color picker, saving custom presets, auto-loading saved presets on load, a gradient-strip
+ * picker UI) would extend from this list. */
 const PALETTE_PRESETS: { label: string; colorA: string; colorB: string }[] = [
   { label: "cornflower & heather", colorA: "#6495ED", colorB: "#D6B85A" },
   { label: "cyan & magenta", colorA: "#22C7D9", colorB: "#D633A6" },
@@ -113,29 +114,58 @@ export function createParamsPanel(container: HTMLElement, params: ToyParams): Pa
 
   pane.addBinding(params, "playing");
   pane.addBinding(params, "layersPerSecond", { min: 1, max: 60, step: 1 });
-  pane.addBinding(params, "colorA");
-  pane.addBinding(params, "colorB");
 
-  // Not a ToyParams field: picking a preset just writes the two hex values into
-  // params.colorA/colorB below, the same as manually editing those color swatches would, so
-  // it rides the existing colorA/colorB hash round-trip and the panel-level "change" listener
-  // in main.ts that triggers the re-render — no separate wiring needed.
-  const presetState = { preset: -1 };
-  const presetOptions: Record<string, number> = { "— pick a preset —": -1 };
-  PALETTE_PRESETS.forEach((preset, index) => {
-    presetOptions[preset.label] = index;
-  });
-  const presetBinding = pane.addBinding(presetState, "preset", {
-    label: "palette preset",
-    options: presetOptions,
-  });
-  presetBinding.on("change", (ev) => {
-    const preset = PALETTE_PRESETS[ev.value];
-    if (!preset) return;
-    params.colorA = preset.colorA;
-    params.colorB = preset.colorB;
-    pane.refresh();
-  });
+  // Palette preset swatches: Tweakpane's stock list/options binding only supports plain text
+  // option labels — there's no built-in way to render a two-color swatch inside a dropdown
+  // option — so this is built as plain DOM (same spirit as shell/timeline.ts's scrub bar)
+  // rather than a Tweakpane blade. It gets spliced into the pane's own DOM tree just above the
+  // "custom colors" folder below (see the insertBefore call after that folder is created), so
+  // visually it still reads as part of the panel, in row order.
+  const presetRow = document.createElement("div");
+  presetRow.style.cssText =
+    "display:flex;align-items:center;justify-content:space-between;" +
+    "padding:4px var(--tp-blade-horizontal-padding, 4px);gap:6px;";
+
+  const presetLabel = document.createElement("div");
+  presetLabel.textContent = "palette preset";
+  presetLabel.style.cssText =
+    "color:var(--tp-label-foreground-color, rgba(202,202,215,0.7));font-size:11px;";
+  presetRow.appendChild(presetLabel);
+
+  const presetTiles = document.createElement("div");
+  presetTiles.style.cssText = "display:flex;gap:4px;";
+  for (const preset of PALETTE_PRESETS) {
+    const tile = document.createElement("button");
+    tile.type = "button";
+    tile.title = preset.label;
+    tile.style.cssText =
+      "width:28px;height:18px;padding:0;border-radius:2px;cursor:pointer;" +
+      "border:1px solid rgba(255,255,255,0.2);" +
+      `background:linear-gradient(135deg, ${preset.colorA} 50%, ${preset.colorB} 50%);`;
+    tile.addEventListener("click", () => {
+      params.colorA = preset.colorA;
+      params.colorB = preset.colorB;
+      // Clicking a plain DOM button doesn't fire any Tweakpane event on its own, so the
+      // panel-level pane.on("change") listener in main.ts (which re-renders and saves the
+      // hash) won't hear about this. pane.refresh() pulls the new colorA/colorB into those
+      // bindings' internal Tweakpane values, which fires a change that bubbles up to that
+      // same pane.on("change") listener — the exact mechanism the old preset dropdown relied
+      // on (it mutated params then called pane.refresh(), nothing more). Call
+      // saveParamsToHash directly too, so hash persistence doesn't depend on that bubbling.
+      pane.refresh();
+      saveParamsToHash(params);
+    });
+    presetTiles.appendChild(tile);
+  }
+  presetRow.appendChild(presetTiles);
+
+  // Individual colorA/colorB fine-tuning now lives behind a native collapsible folder —
+  // Tweakpane's addFolder gives a built-in expand/collapse chevron for free — so the swatch
+  // presets above are the primary path and manual tuning is opt-in.
+  const customColorsFolder = pane.addFolder({ title: "custom colors", expanded: false });
+  customColorsFolder.addBinding(params, "colorA");
+  customColorsFolder.addBinding(params, "colorB");
+  customColorsFolder.element.parentElement?.insertBefore(presetRow, customColorsFolder.element);
 
   pane.addBinding(params, "reliefStrength", { min: 0, max: 60, step: 0.5 });
   pane.addBinding(params, "strokeWidthScale", { min: 0.2, max: 3, step: 0.05 });

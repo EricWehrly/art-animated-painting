@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { createScene, CAMERA_HOME_POSITION, CAMERA_HOME_TARGET } from "./shell/canvas";
 import { attachCameraControls } from "./shell/camera-controls";
 import { createTimeline } from "./shell/timeline";
+import { createCreditsModal } from "./shell/credits";
 import { createParamsPanel, loadParamsFromHash, saveParamsToHash, defaultParams, type ToyParams } from "./shell/params";
 import { capturePNG } from "./shell/capture";
 import { loadPoseCache } from "./pose/pose-cache";
@@ -31,6 +32,7 @@ async function main() {
   const { renderer, camera, domElement } = createScene(app);
 
   const timeline = createTimeline(app);
+  createCreditsModal(app);
   const params: ToyParams = loadParamsFromHash();
   const pane = createParamsPanel(app, params);
 
