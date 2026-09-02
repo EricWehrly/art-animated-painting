@@ -31,7 +31,7 @@ Traversal:
 | P3 | [paint-accumulator](work/paint-accumulator.md) — splat, decay, history window | planned |
 | P4 | [art-direction](work/art-direction.md) — palette, depth, topmost-layer treatment | planned |
 | P5 | [watercolor-ground](work/watercolor-ground.md) — paper tooth, washes, interaction | planned |
-| P6 | [watercolor-aging](work/watercolor-aging.md) — aged paint converts to a watercolor treatment | planned |
+| P6 | [watercolor-aging](work/watercolor-aging.md) — aged paint converts to a watercolor treatment | in-progress |
 
 ## Decisions on record
 

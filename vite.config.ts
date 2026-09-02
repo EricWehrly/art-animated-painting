@@ -17,6 +17,7 @@ export default defineConfig({
         main: "index.html",
         swatch: "swatch.html",
         compare: "compare.html",
+        watercolor: "watercolor-swatch.html",
       },
     },
   },

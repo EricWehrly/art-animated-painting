@@ -2,7 +2,7 @@
 id: watercolor-aging
 parent: roadmap
 phase: P6
-state: planned
+state: in-progress
 ---
 
 # watercolor-aging — old paint converts toward a watercolor treatment
@@ -240,3 +240,38 @@ color — without a chosen treatment being picked yet for integration. Integrati
 "done" only once aged paint in the real accumulator visibly converts per the treatment
 validated here, keyed off paint-accumulator's existing age/stage signal with no second aging
 clock introduced.
+
+## Prototype results — the recommended trio reads as watercolor
+
+Built `watercolor-swatch.html`/`src/watercolor-swatch.ts` per the plan above, reusing the shell
+and paint pipeline unmodified, with a new `src/paint/shading-pass-watercolor.ts` carrying the
+three-technique treatment behind its own uniforms — deliberately not merged into the real
+`shading-pass.ts`. One deviation from the plan as written: rather than a single live mix slider,
+the shader splits the screen into four fixed vertical bands (0%, 33%, 66%, 100% simulated age)
+via `vUv.x`, so the whole oil→watercolor transition is visible in one screenshot instead of
+requiring four separate captures at different slider positions — the three technique *weights*
+(edge darken, relief reduction, desaturation) are what's live-tunable instead, which is what
+actually needed eyeballing per-parameter. Three stroke groups per band, matching the plan: an
+isolated stroke, an overlapping two-color pair, and a pair of broad low-relief washes.
+
+Verified by eye, at the shipped default weights (edge darken 0.6, relief reduction 0.7,
+desaturation 0.6):
+
+- **Reduced relief** is the clearest of the three — the isolated stroke goes from strongly
+  ridged/shadowed at 0% to visibly flat by 100%, a real qualitative shift, not a subtle fade.
+- **Desaturation** is clearly visible on the wash pair — vivid saturated red/blue at 0% versus
+  a distinctly paler, cooler, more transparent pair by 100% (ground shows through more, per the
+  `wcCoverage` term).
+- **Edge darkening** is real but the subtlest of the three at default weight — confirmed by
+  zooming into the wash-pair boundary at 100% (a distinct darker/richer seam where the two
+  washes meet, absent entirely at 0% where the same two washes meet with no seam at all) and by
+  toggling the weight to compare. Worth a slightly higher default weight than 0.6 once judged
+  against the real accumulator's actual stroke density, since isolated single-band strokes make
+  it easy to miss at a glance — matches the doc's own framing of this as "the single detail that
+  makes something read as watercolor," i.e. the one most worth not underselling.
+
+Net: the trio does read as a transition from wet oil to flat watercolor, confirming the
+"recommended first prototype" survey call was right without needing to reach for granulation or
+faked bleed. `npx tsc --noEmit` clean; no console errors in the standalone page. Integration
+(routing the real accumulator's aged stage through this treatment) is unstarted — this only
+validates the look, per the plan above.
