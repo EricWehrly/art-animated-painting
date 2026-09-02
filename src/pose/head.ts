@@ -179,7 +179,13 @@ export function generateHeadMarks(
   const wobbleDamping = 0.35;
   const paintCapacity = 4.5;
   const dryMinLoad = 0.15;
-  const dryWidthFactor = 0.45;
+  // Higher floor than the limb default (0.45) — a limb has a dozen-plus thin lanes across its
+  // width, so one lane going dry-thin is a small fraction of the silhouette and barely visible
+  // next to its neighbours. The head only has ~4-6 fat lanes across its whole width, so the
+  // exact same proportional thinning removes a much bigger share of the visible coverage —
+  // confirmed against the user's frame-155 screenshot, which still showed gaps even after the
+  // lane-overlap-margin fix below. See docs/work/pose-pipeline.md Round 24.
+  const dryWidthFactor = 0.7;
   const dryVolumeFactor = 0.4;
   const maxHeadingDeviation = 0.38; // radians, ~22 degrees — same clamp as Round 19's limb fix
 
@@ -223,17 +229,17 @@ export function generateHeadMarks(
         center[1] + side[1] * laneX * rx + up[1] * laneY * ry,
         center[2] + side[2] * laneX * rx + up[2] * laneY * ry,
       ];
-      // BUG (found responding to the user's "trident people" screenshot): this divided by rx
-      // (the oval's HALF-width) where generateChainMarks' equivalent divides by the limb's FULL
-      // local width — see strokes.ts's `const laneWidthRendered = (localWidth / numLanes) * 1.6`.
-      // Using half-width here with a 2.2 multiplier was still only ~1.1x the lane spacing (half
-      // of limbs' ~1.6x overlap margin), not enough margin to survive dry-brush width shrinkage
-      // (dryWidthFactor down to 0.45x) or motion-driven thinning — lanes lost contact with their
-      // neighbours and read as separate fingers/prongs instead of one filled oval, exactly the
-      // "gaps miss the whole point of wanting to fill this area in" complaint. Matches
-      // strokes.ts's formula exactly now (full width / numLanes * 1.6), same overlap margin
-      // limbs already rely on. See docs/work/pose-pipeline.md Round 24.
-      const laneWidthRendered = ((2 * rx) / numLanes) * 1.6;
+      // This originally divided by rx (the oval's HALF-width) where generateChainMarks' own
+      // equivalent divides by the limb's FULL local width — see strokes.ts's
+      // `(localWidth / numLanes) * 1.6`. Fixing the unit mismatch to match that formula exactly
+      // (full width / numLanes * 1.6) closed MOST gaps but not all — a limb spreads the same
+      // proportional dry/motion thinning across a dozen-plus thin lanes, so one thin lane barely
+      // registers; the head only has ~4-6 fat lanes across its whole width, so the identical
+      // margin that works for limbs still opened visible gaps at some frames (confirmed against
+      // the user's frame-155 screenshot, taken after the first fix landed). Bumped past parity
+      // with limbs — 2.6x, not 1.6x — specifically because so few lanes make any one gap a much
+      // bigger fraction of the visible silhouette. See docs/work/pose-pipeline.md Round 24.
+      const laneWidthRendered = ((2 * rx) / numLanes) * 2.6;
 
       // Sampled along the real physical neck->head bone, using t as the fraction — gives each
       // lane's own steps a slightly different velocity sample for free, rather than one single
@@ -319,7 +325,11 @@ export function generateHeadMarks(
       const dryVolumeMul = dryVolumeFactor + (1 - dryVolumeFactor) * loadFrac;
       const pressureNoise = 1 + 0.5 * (0.45 + softenedIntensity * 0.55) * (hash(stepId + 0.87) * 2 - 1);
 
-      const width = laneWidthRendered * dryWidthMul * pressureNoise * (1 - softenedIntensity * 0.35);
+      // Motion-driven width shrink halved from the limb default (0.35) — a limb's many thin
+      // lanes can afford to thin further under motion since neighbours pick up the slack; the
+      // head's few fat lanes can't lose that much width without opening a gap. See the
+      // laneWidthRendered comment above for the same reasoning applied to the base margin.
+      const width = laneWidthRendered * dryWidthMul * pressureNoise * (1 - softenedIntensity * 0.15);
       const volume = Math.max(0.05, 0.2 - softenedIntensity * 0.3 * 0.4) * dryVolumeMul * pressureNoise;
 
       strokes.push({

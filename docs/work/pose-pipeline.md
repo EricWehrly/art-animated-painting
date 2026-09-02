@@ -1269,6 +1269,34 @@ user's own screenshot. Re-checked under motion (frame 300, duress on, head-joint
 the interior stays solid/filled, with fraying confined to the silhouette's own edge (the existing
 motion-response behaviour), not reopening gaps through the middle. `npx tsc --noEmit` clean.
 
+**That verification was too narrow — the same "trident" gaps reappeared at other frames.** The
+user checked frame 155 themselves (a genuine mid-dance pose, both dancers, duress on) and pushed
+back with a fresh annotated screenshot: still visibly gapped, unchanged from before the fix.
+Reproducing frame 155 exactly confirmed it — matching parity with limbs' own 1.6x overlap margin
+was NOT actually enough, because the reasoning only accounted for the unit bug, not the
+underlying reason limbs get away with 1.6x at all: a limb spreads dry-brush/motion-driven width
+shrinkage across a dozen-plus thin lanes, so any one lane thinning out is a small fraction of the
+visible silhouette. The head only ever has ~4-6 fat lanes across its whole width (`numLanes =
+round(2*rx/markWidth)`, and `rx` itself is small), so the identical proportional shrinkage
+removes a much bigger share of visible coverage — parity with limbs was the wrong bar to aim for.
+
+Three changes, all still scoped to `head.ts` alone (not touching `generateChainMarks`/limbs):
+`laneWidthRendered`'s margin raised from 1.6x to 2.6x; `dryWidthFactor` (how thin a fully-dry
+lane renders) raised from the limb default 0.45 to 0.7; and the motion-driven width reduction
+term roughly halved (0.35 → 0.15). Each of these independently narrows the head's own paint
+strokes under some condition (dry brush, high motion) — raising all three together is what
+actually keeps adjacent lanes touching across the range of conditions a real dance produces,
+rather than only at the specific frame/pose used to verify the first attempt.
+
+Verified properly this time: frame 155 (the user's own repro case) now reads solid/filled for
+both dancers, confirmed both from the wide composition matching their screenshot and a close
+zoom on each head individually. Additionally spot-checked frames 0, 50, 250, 300, and 400 (not
+just the one frame that happened to look right before) — solid/filled at every one, both calm
+and under duress motion. No console errors. The lesson, worth stating plainly: verifying a fix
+at a single frame (even one chosen because it originally looked bad) doesn't establish that a
+per-frame-varying formula is actually fixed — the fix needs to hold across the range motion
+actually produces, and claiming otherwise from one data point was the mistake here.
+
 ### Round 25: renamed the "trial pair" picker to "dance," confirmed there really are no names to give it
 
 User's ask: name each of the 15 salsa pairs individually, since "actual salsa dancing has to
