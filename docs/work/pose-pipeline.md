@@ -1083,3 +1083,65 @@ no visible notches at any joint, confirmed further with a tight zoomed crop. A s
 crop with speckles enabled shows a visible mix of small dots and a couple of longer streaks at
 noticeably different sizes, with more visible separation from the source stroke than Round 17's
 very tight version. swatch.html and compare.html both load with no console errors.
+
+### Round 21: the head reads as an oriented, foreshortened oval instead of a tapering "worm"
+
+User's framing this round: "any kind of rendition of a head would need a directional reading...
+Draw an oval for the head with proper angling and perspective so it actually conveys direction
+of gaze?" The neck+head chain (see skeleton.ts buildChains) got the exact same tapering-tube
+treatment every limb gets, ending in a small terminal joint — a shrinking tube with no
+distinguishable head shape, which is what read as a worm.
+
+**The data constraint, stated up front:** the baked pose cache stores joint POSITIONS only
+(see pose-cache.ts), never rotations — there is no literal gaze/eye-line signal available, and
+never will be from this data source. What's built here is a proxy: the oval's "up" axis comes
+from the neck→head bone (head tilt/pitch, a real per-frame signal), and its "facing" axis
+(which way the oval's flat face points) comes from the shoulder line — on the assumption that
+in this dance the head mostly tracks where the body itself is facing. A genuine independent
+head-turn (nose turning while the torso stays put) has no signal to draw from and won't show.
+
+**New module, `pose/head.ts`.** `findHeadJoints` resolves the head/neck/arm joint indices by
+name once at load; `truncateHeadChain` trims the neck+head chain to stop exactly at the head
+joint (not the neck — an earlier attempt stopped at the neck and left the neck-to-head bone
+painted by neither the tube nor the oval, a real gap between the two treatments); `generateHeadMarks`
+paints the head itself.
+
+**The oval is a genuinely flat 3D disc, not a 2D screen-space trick.** Marks tile an ellipse
+in the plane spanned by "up" and a "side" axis (`side = cross(facing, up)`), with the disc's
+normal being the facing direction and literally zero extent along it. The fixed camera's own
+perspective projection is what foreshortens this correctly with no manual math: when facing
+points toward or away from the camera, the disc's plane sits roughly perpendicular to the
+view ray and projects near full width; when facing is perpendicular to the camera (the dancer
+in profile), the disc's plane contains the view ray and its projected width collapses toward a
+sliver. This is just how a flat object in 3D space always looks from a fixed viewpoint — no
+foreshortening formula needed, only correct real-space placement.
+
+**Two real bugs found and fixed during build, not just tuning:**
+
+1. **`LeftShoulder`/`RightShoulder` are zero-offset rotation pivots in this rig** — both sit at
+   the exact same world position (verified: `shoulderDist` measured as literally `0`), since a
+   zero-offset BVH joint's baked world position equals its parent's. A shoulder-to-shoulder
+   vector built from them collapses to a zero-length vector, and everything downstream (facing
+   direction, oval width/height, since both were sized off `shoulderWidth`) silently degenerated
+   to near-nothing — the head rendered as a barely-visible dot. Fixed by resolving to the
+   *arm* joints (`LeftArm`/`RightArm`) instead, which carry the real offset out to the actual
+   shoulder socket (`HeadJoints`'s fields renamed `leftArmJoint`/`rightArmJoint` accordingly, to
+   not mislabel what's actually being read).
+2. **Pure random rejection-sampling within the ellipse read as clumpy/cauliflower**, not a
+   solid oval — expected at these small counts (Poisson noise means real gaps and real
+   pile-ups both happen by chance). Switched to a jittered GRID (even coverage by construction,
+   jitter within each cell for organic irregularity, same "guarantee, not probability" principle
+   as Round 20's joint-position fix) — this alone was the difference between "recognizable oval"
+   and "scattered debris."
+
+Verified: with `LeftArm`/`RightArm` resolved correctly (`shoulderDist` ≈ 7, sane), a solo
+dancer at a face-on-ish frame (frame 0) shows a dense, evenly-filled, genuinely oval head
+connected cleanly to the neck. Directly tested the foreshortening claim by finding frames
+where the shoulder line's horizontal angle sits near parallel vs. near perpendicular to the
+camera's fixed view direction (computed from the actual per-frame shoulder vector, not
+guessed): frame 30 (shoulder line ~perpendicular to camera → profile) renders as a visibly
+thin sliver; frame 0/120/180/250 (shoulder line ~parallel → face-on) render as a full round
+oval — confirming the perspective cue actually works as intended, not just at one lucky frame.
+Checked the default (both dancers, motion on) composed view at normal zoom: both heads read
+clearly as heads, distinct from the torso, with no console errors. swatch.html and
+compare.html are unaffected (neither uses the head module) and still load clean.

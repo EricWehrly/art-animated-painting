@@ -15,6 +15,7 @@ import {
   type SpeckleStyle,
   type ChainDebugDab,
 } from "./pose/strokes";
+import { findHeadJoints, truncateHeadChain, generateHeadMarks, type HeadStyle } from "./pose/head";
 import { createStrokeMesh } from "./paint/stroke-mesh";
 import { createHeightPass } from "./paint/height-pass";
 import { createShadingPass } from "./paint/shading-pass";
@@ -40,7 +41,13 @@ async function main() {
   // are sourced from generateChainMarks' own fast steps (see its emittersOut parameter), not
   // an independent per-bone sampling pass, so a speckle always traces back to an actual
   // painted stroke's own tip — see docs/work/pose-pipeline.md Round 14.
-  const chains = buildChains(cache.header.joints);
+  // The neck+head chain otherwise walks all the way to the head's own end site and gets the
+  // same tapering-tube treatment as any limb — a small stub at the end of a shrinking tube,
+  // which is what read as a "worm." headJoints is null only if the rig lacks named shoulders
+  // (findHeadJoints' fallback contract) — chains stays untouched in that case, and the head
+  // just keeps the old tube treatment rather than the toy failing to load.
+  const headJoints = findHeadJoints(cache.header.joints);
+  const chains = headJoints ? truncateHeadChain(buildChains(cache.header.joints), headJoints) : buildChains(cache.header.joints);
   const frameCount = cache.header.frameCount;
   timeline.setFrameCount(frameCount);
 
@@ -51,7 +58,10 @@ async function main() {
   // contribute one emitter), rather than an independent bone-based estimate.
   const maxMarksPerChainEstimate = 90;
   const mainMarksTotal = chains.length * maxMarksPerChainEstimate * cache.header.dancers.length;
-  const maxStrokes = mainMarksTotal + mainMarksTotal * speckleMaxCount;
+  // generateHeadMarks' own count formula tops out well under this per dancer — generous
+  // headroom, same spirit as the chain estimate above.
+  const maxHeadMarks = 400 * cache.header.dancers.length;
+  const maxStrokes = mainMarksTotal + mainMarksTotal * speckleMaxCount + maxHeadMarks;
 
   const strokeMesh = createStrokeMesh(maxStrokes);
   // The camera's viewing angle is a fixed, build-time constant (see shell/canvas.ts) —
@@ -146,6 +156,12 @@ async function main() {
     };
   }
 
+  function headStyleFor(dancerIndex: number): HeadStyle {
+    const hex = params.duress ? (dancerIndex === 0 ? params.colorA : params.colorB) : params.colorA;
+    const c = new THREE.Color(hex);
+    return { color: [c.r, c.g, c.b], widthScale: params.strokeWidthScale };
+  }
+
   function speckleStyleFor(dancerIndex: number): SpeckleStyle {
     const hex = dancerIndex === 0 ? params.colorA : params.colorB;
     const c = new THREE.Color(hex);
@@ -186,6 +202,9 @@ async function main() {
       if (debugDabs) debugDancers.push({ dancerIndex, debugDabs });
       if (emitters) {
         allStrokes.push(...generateSpeckles(emitters, frame, speckleStyleFor(dancerIndex)));
+      }
+      if (headJoints) {
+        allStrokes.push(...generateHeadMarks(cache, headJoints, dancerIndex, frame, headStyleFor(dancerIndex)));
       }
     }
     strokeMesh.setStrokes(allStrokes);
