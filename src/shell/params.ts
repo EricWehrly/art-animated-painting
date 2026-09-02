@@ -1,4 +1,5 @@
 import { Pane } from "tweakpane";
+import { AVAILABLE_TRIAL_PAIRS } from "../pose/pose-cache";
 
 export interface ToyParams {
   colorA: string;
@@ -37,6 +38,14 @@ export interface ToyParams {
   /** -1 = both dancers (default). 0/1 = render only that dancer — removes the other from the
    * canvas entirely so a single body can be read without the two figures overlapping. */
   soloDancer: -1 | 0 | 1;
+  /** Which baked CMU 60/61 salsa trial pair to play — see pose/pose-cache.ts's
+   * AVAILABLE_TRIAL_PAIRS and loadPoseCache's `pairId` param. "01" (60_01/61_01) is the pair
+   * the toy has always shipped with. Changing this triggers a full page reload (see the
+   * `trialPair` binding in createParamsPanel below) rather than a live pose-cache hot-swap —
+   * frame count, joint list, and per-chain instance budgets in main.ts are all derived once
+   * from the loaded cache at boot, so reloading with the new selection already baked into the
+   * URL hash is far lower-risk than trying to re-derive all of that live.  */
+  trialPair: string;
 }
 
 export const defaultParams: ToyParams = {
@@ -58,6 +67,7 @@ export const defaultParams: ToyParams = {
   duress: true,
   debugMode: false,
   soloDancer: -1,
+  trialPair: "01",
 };
 
 /** Reads params from the URL hash (if present), falling back to defaults. */
@@ -138,6 +148,23 @@ export function createParamsPanel(container: HTMLElement, params: ToyParams): Pa
   pane.addBinding(params, "soloDancer", {
     label: "solo dancer",
     options: { both: -1, "dancer 1": 0, "dancer 2": 1 },
+  });
+
+  // 15 baked pairs (see AVAILABLE_TRIAL_PAIRS) is comfortably within plain-dropdown territory —
+  // no type-to-filter combobox needed. Switching pairs needs a full pose-cache reload (new
+  // frame count, joint list, per-chain budgets — see main.ts), which is a page-load-time
+  // concern, not something this panel can hot-swap — so this binding reloads the page with the
+  // new selection already saved to the hash, same pattern as any other param, rather than
+  // firing through the normal pane "change" listener that just re-renders the current frame.
+  const trialPairOptions: Record<string, string> = {};
+  for (const pair of AVAILABLE_TRIAL_PAIRS) trialPairOptions[pair.label] = pair.id;
+  const trialPairBinding = pane.addBinding(params, "trialPair", {
+    label: "trial pair",
+    options: trialPairOptions,
+  });
+  trialPairBinding.on("change", () => {
+    saveParamsToHash(params);
+    window.location.reload();
   });
 
   pane.on("change", () => saveParamsToHash(params));

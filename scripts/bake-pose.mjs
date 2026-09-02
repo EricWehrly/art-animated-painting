@@ -1,13 +1,34 @@
 // Bakes two paired BVH trials (see docs/work/pose-pipeline.md) into a compact pose cache:
-// public/data/pose-cache.json (header) + public/data/pose-cache.bin (Float32Array positions).
+// public/data/pose-cache-<pairId>.json (header) + public/data/pose-cache-<pairId>.bin
+// (Float32Array positions), where <pairId> is dancer A's trial number (e.g. "60_01" -> "01").
+// Also writes public/data/pose-cache.json/.bin as an unkeyed copy of the DEFAULT pair, so
+// existing callers that don't care which pair loads (loadPoseCache() with no id) keep working.
 //
 // Usage: yarn bake --a=60_01 --b=61_01 --fps=30 --out=public/data
+//        yarn bake --a=60_12 --b=61_12 --fps=30 --out=public/data   (bakes as pose-cache-12.*)
+//
+// The DEFAULT_PAIR_ID pair (see below) additionally mirrors to the unkeyed pose-cache.json/.bin
+// filenames, so `yarn bake` with no args keeps producing exactly what it always has.
 
 import { mkdir, writeFile } from "node:fs/promises";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fetchTrial } from "./fetch-bvh.mjs";
 import { parseBVH, computeWorldPositions } from "./lib/bvh-parser.mjs";
+
+// The pair the toy ships with when no pair is selected (see src/pose/pose-cache.ts's
+// loadPoseCache default and src/shell/params.ts's trial picker default). Keyed off dancer A's
+// trial number, same as every other pair — see pairIdFor().
+const DEFAULT_PAIR_ID = "01";
+
+/** Pair id used to key output filenames: dancer A's numeric trial suffix (e.g. "60_01" -> "01").
+ * The dataset always pairs same-numbered trials (60_NN with 61_NN — see docs/roadmap.md), so
+ * this alone is enough to identify a pair. */
+function pairIdFor(trialA) {
+  const [, nn] = trialA.split("_");
+  if (!nn) throw new Error(`Trial "${trialA}" doesn't look like "<subject>_<NN>"`);
+  return nn;
+}
 
 function parseArgs(argv) {
   const args = { a: "60_01", b: "61_01", fps: 30, out: "public/data" };
@@ -88,6 +109,7 @@ async function main() {
   combined.set(resampledA, 0);
   combined.set(resampledB, resampledA.length);
 
+  const pairId = pairIdFor(args.a);
   const header = {
     fps: args.fps,
     frameCount: outFrameCount,
@@ -98,17 +120,31 @@ async function main() {
       { id: "B", trial: args.b, floatOffset: resampledA.length },
     ],
     units: "bvh-native (CMU mocap; consumers should normalize scale)",
+    pairId,
   };
 
   const outDir = path.resolve(args.out);
   await mkdir(outDir, { recursive: true });
-  await writeFile(path.join(outDir, "pose-cache.json"), JSON.stringify(header, null, 2));
-  await writeFile(path.join(outDir, "pose-cache.bin"), Buffer.from(combined.buffer));
+
+  const headerJson = JSON.stringify(header, null, 2);
+  const binBuffer = Buffer.from(combined.buffer);
+
+  const writeOne = (basename) =>
+    Promise.all([
+      writeFile(path.join(outDir, `${basename}.json`), headerJson),
+      writeFile(path.join(outDir, `${basename}.bin`), binBuffer),
+    ]);
+
+  await writeOne(`pose-cache-${pairId}`);
+  // Mirror the default pair to the unkeyed filenames too, so callers that just want "the pose
+  // cache" (loadPoseCache() with no pair id — main.ts/compare.ts today) keep working unchanged.
+  if (pairId === DEFAULT_PAIR_ID) await writeOne("pose-cache");
 
   const bytes = combined.byteLength;
   console.log(
     `Wrote ${outFrameCount} frames x ${jointCount} joints x 2 dancers ` +
-      `(${(bytes / 1024).toFixed(0)} KB binary) to ${outDir}`
+      `(${(bytes / 1024).toFixed(0)} KB binary) to ${outDir} as pose-cache-${pairId}.{json,bin}` +
+      (pairId === DEFAULT_PAIR_ID ? ` (+ mirrored to pose-cache.{json,bin} as the default)` : "")
   );
 }
 

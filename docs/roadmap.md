@@ -67,12 +67,21 @@ captured simultaneously as a couple. Verified: matching frame counts (`60_01`/`6
 2243 frames @ 120fps) and root trajectories 8–38 units apart with hips at ~17 units, i.e. the
 two skeletons already share one world space at partner distance. No sync or placement needed.
 
+**All 15 numbered pairs verified and baked** (see [pose-pipeline](work/pose-pipeline.md) Round
+22): every `60_NN`/`61_NN` pair (01 through 15) has a matching rig, matching frame counts (no
+trimming needed for any of them), and a plausible partner distance (13.5–20.2 unit average,
+clustered around the ~17-unit figure above). All 15 are baked into `public/data/` as
+`pose-cache-<NN>.json`/`.bin` and selectable live from the "trial pair" dropdown in the params
+panel — see `src/pose/pose-cache.ts`'s `AVAILABLE_TRIAL_PAIRS` and `scripts/bake-pose.mjs`.
+
 CMU's data is free for all uses. BVH conversions by Bruce Hahne (cgspeed), mirrored at
 [una-dinosauria/cmu-mocap](https://github.com/una-dinosauria/cmu-mocap).
 
-Default trial: **60_01 / 61_01** (18.7s). Alternate: **60_12 / 61_12** (14.1s, calmer, shorter loop).
-It is salsa rather than slow dancing — no free slow-dance couple capture appears to exist — so a
-global `timeScale` slows it. This helps rather than hurts: slower bones fling shorter, fatter strokes.
+Default trial: **60_01 / 61_01** (18.7s). It is salsa rather than slow dancing — no free
+slow-dance couple capture appears to exist — so a global `timeScale` slows it. This helps
+rather than hurts: slower bones fling shorter, fatter strokes. Any of the 15 pairs can be
+switched to live via the trial-pair picker; 60_12/61_12 (14.1s, calmer, shorter loop) was the
+first-known alternate before all 15 were verified.
 
 ### Alternate sources considered (not adopted)
 

@@ -1,6 +1,6 @@
 {
   "fps": 30,
-  "frameCount": 561,
+  "frameCount": 568,
   "jointCount": 38,
   "joints": [
     {
@@ -197,15 +197,15 @@
   "dancers": [
     {
       "id": "A",
-      "trial": "60_01",
+      "trial": "60_13",
       "floatOffset": 0
     },
     {
       "id": "B",
-      "trial": "61_01",
-      "floatOffset": 63954
+      "trial": "61_13",
+      "floatOffset": 64752
     }
   ],
   "units": "bvh-native (CMU mocap; consumers should normalize scale)",
-  "pairId": "01"
+  "pairId": "13"
 }

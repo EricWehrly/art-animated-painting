@@ -34,7 +34,10 @@ async function main() {
   const params: ToyParams = loadParamsFromHash();
   const pane = createParamsPanel(app, params);
 
-  const cache = await loadPoseCache("/data");
+  // params.trialPair selects which baked CMU 60/61 trial pair to play (see the "trial pair"
+  // picker in shell/params.ts) — switching it reloads the page rather than hot-swapping here,
+  // since frame count/joints/chains below are all derived once from cache.header at boot.
+  const cache = await loadPoseCache("/data", params.trialPair);
   // Main figure strokes cover whole CHAINS (a whole limb, e.g. hip-to-toe or shoulder-to-wrist)
   // with many brush marks tiled along and across the chain's own shape — see
   // generateChainMarks in pose/strokes.ts and buildChains in pose/skeleton.ts. Speckle emitters

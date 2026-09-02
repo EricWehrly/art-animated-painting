@@ -1145,3 +1145,47 @@ oval — confirming the perspective cue actually works as intended, not just at 
 Checked the default (both dancers, motion on) composed view at normal zoom: both heads read
 clearly as heads, distinct from the torso, with no console errors. swatch.html and
 compare.html are unaffected (neither uses the head module) and still load clean.
+
+### Round 22: how many salsa trials actually exist, baked and made selectable
+
+User's framing this round: "How many animations do we have? If we have more than a dozen, I'd
+want one of those Combo Boxes where you can type to filter the dropdown" — the toy only ever
+shipped one baked trial pair (`60_01`/`61_01`), and roadmap.md's own "Source data" section had
+only verified that pair plus one alternate (`60_12`/`61_12`) as sharing world space; the real
+count of usable pairs was genuinely unknown.
+
+Enumerated both subjects' trial listings on the `una-dinosauria/cmu-mocap` GitHub mirror via
+the GitHub API (raw.githubusercontent.com, what `fetch-bvh.mjs` fetches from, has no directory
+listing) — both subjects have exactly 15 numbered trials. Fetched and BVH-parsed all 15
+candidate pairs (reusing `bake-pose.mjs`'s own `parseBVH`/`computeWorldPositions` rather than
+new parsing logic) and checked matching rig, matching frame count, and partner distance the
+same way the original two pairs were verified. **All 15 are valid** — no frame-count trimming
+needed for any of them, partner distance averaged 13.5–20.2 units across the set, tightly
+clustered around the ~17-unit figure the first two pairs established. Since 15 sits at the
+user's own "dozen or fewer" threshold, a plain Tweakpane dropdown was the right call, not a
+type-to-filter combobox — see the "trial pair" binding in `shell/params.ts`.
+
+**Baking was single-slot; made it multi-slot.** `bake-pose.mjs` always wrote to the same fixed
+`pose-cache.json`/`.bin` filenames — running it again for a different trial silently overwrote
+whatever was there. Output filenames are now keyed by pair id (dancer A's trial number, e.g.
+`pose-cache-12.json`/`.bin`), with the default pair additionally mirrored to the old unkeyed
+filenames so `yarn bake` with no args still produces exactly what it always has and every
+existing caller that doesn't care which pair loads keeps working unchanged. All 15 pairs were
+baked into `public/data/` (~6.9MB total — small enough not to bother trimming the set).
+`pose-cache.ts`'s `loadPoseCache` gained an optional `pairId` argument (omitted = the unkeyed
+default files) and a new `AVAILABLE_TRIAL_PAIRS` export for the picker to enumerate.
+
+**Switching trials reloads the page, deliberately, rather than hot-swapping pose data live.**
+Frame count, the joint list, chains, `headJoints`, and the per-chain stroke-instance budgets
+are all derived ONCE from `cache.header` at boot in `main.ts` — re-deriving all of that live
+mid-session is real surface area for a subtle bug, versus just saving the new selection to the
+URL hash (the toy's existing state-persistence mechanism) and calling `location.reload()`,
+which reuses the entire already-working boot path unchanged. Same "reload beats hot-swap"
+instinct this project has used before for hash-driven state changes.
+
+Verified independently (not just by the implementing pass): loaded the toy fresh, selected
+trial pair 05 via the dropdown, confirmed the timeline's frame-count max changed (different
+trials really do have different lengths) and the rendered pose visibly differed from the
+default trial — including rendering correctly through the newly-added head-oval treatment from
+Round 21, confirming the two features compose cleanly. `compare.html` and `swatch.html` (which
+also call `loadPoseCache`) both still load with no console errors.
