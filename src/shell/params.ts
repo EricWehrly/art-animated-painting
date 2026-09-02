@@ -78,6 +78,17 @@ export function saveParamsToHash(params: ToyParams) {
   window.location.hash = encodeURIComponent(JSON.stringify(params));
 }
 
+/** Named colorA/colorB pairings offered by the "palette preset" dropdown below. UI-only
+ * convenience list — not part of ToyParams, doesn't round-trip through the URL hash on its
+ * own (picking one just assigns into params.colorA/colorB, which already round-trip). Future
+ * work (an independent per-swatch color picker, saving custom presets, auto-loading saved
+ * presets on load, a gradient-strip picker UI) would extend from this list. */
+const PALETTE_PRESETS: { label: string; colorA: string; colorB: string }[] = [
+  { label: "cornflower & heather", colorA: "#6495ED", colorB: "#D6B85A" },
+  { label: "cyan & magenta", colorA: "#22C7D9", colorB: "#D633A6" },
+  { label: "blue & gold (dark)", colorA: "#1B3A63", colorB: "#C9971C" },
+];
+
 export function createParamsPanel(container: HTMLElement, params: ToyParams): Pane {
   // Tweakpane only self-positions (fixed, top-right) when it creates its OWN floating
   // container. Handed an explicit `container`, it renders inline in normal document flow —
@@ -94,6 +105,28 @@ export function createParamsPanel(container: HTMLElement, params: ToyParams): Pa
   pane.addBinding(params, "layersPerSecond", { min: 1, max: 60, step: 1 });
   pane.addBinding(params, "colorA");
   pane.addBinding(params, "colorB");
+
+  // Not a ToyParams field: picking a preset just writes the two hex values into
+  // params.colorA/colorB below, the same as manually editing those color swatches would, so
+  // it rides the existing colorA/colorB hash round-trip and the panel-level "change" listener
+  // in main.ts that triggers the re-render — no separate wiring needed.
+  const presetState = { preset: -1 };
+  const presetOptions: Record<string, number> = { "— pick a preset —": -1 };
+  PALETTE_PRESETS.forEach((preset, index) => {
+    presetOptions[preset.label] = index;
+  });
+  const presetBinding = pane.addBinding(presetState, "preset", {
+    label: "palette preset",
+    options: presetOptions,
+  });
+  presetBinding.on("change", (ev) => {
+    const preset = PALETTE_PRESETS[ev.value];
+    if (!preset) return;
+    params.colorA = preset.colorA;
+    params.colorB = preset.colorB;
+    pane.refresh();
+  });
+
   pane.addBinding(params, "reliefStrength", { min: 0, max: 60, step: 0.5 });
   pane.addBinding(params, "strokeWidthScale", { min: 0.2, max: 3, step: 0.05 });
   pane.addBinding(params, "strokeLengthScale", { min: 0.2, max: 3, step: 0.05 });
