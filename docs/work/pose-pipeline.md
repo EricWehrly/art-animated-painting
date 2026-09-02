@@ -1189,3 +1189,48 @@ trials really do have different lengths) and the rendered pose visibly differed 
 default trial — including rendering correctly through the newly-added head-oval treatment from
 Round 21, confirming the two features compose cleanly. `compare.html` and `swatch.html` (which
 also call `loadPoseCache`) both still load with no console errors.
+
+### Round 23: the head was shaped right but rendered wrong — it needed to be painted, not filled
+
+User's framing this round: positive on the oval *shape* from Round 21, but "The head ovals need
+serious work... they don't seem like they're drawn the way the rest of it is. They're sort of
+'rendered' face-on and then that's distorted." The diagnosis matched the user's own read exactly
+— Round 21 filled the disc with a static jittered grid: geometrically correct (real placement,
+real camera-driven foreshortening), but nothing about *how* it got filled matched how the rest
+of the figure gets painted. No paint load, no wobble, no response to motion — the one region of
+the toy that wasn't using `generateChainMarks`' own brush-pass model.
+
+**Fix: `generateHeadMarks` now ports that whole model into the oval's own 2D (up, side) frame.**
+Each vertical "lane" across the oval is a brush pass with the same persistent paint-load
+depletion/reload and damped wobble a limb lane carries, and its own length is however far that
+lane's vertical chord actually spans the ellipse at its distance from center — short near the
+edges, longest through the middle, the same "let the region's own shape decide coverage density"
+principle `generateChainMarks` already used for limbs. Motion is sampled from the real
+neck→head bone velocity via `sampleBoneAtT`, with the same heading-deviation clamp (22°) and
+`catchJitter` de-correlation that fixed limbs reading as a mechanical "comb" under motion
+(Round 19) — both reused deliberately, since the oval's lanes are exactly the kind of
+short, correlated-velocity geometry that bug came from.
+
+**"We could soften and spread it out... rather than just making a constant force":** implemented
+as `attachFalloff = 1 - 0.35 * t`, where `t` is a lane's own position from neck (0) to crown (1).
+Motion intensity is scaled by this falloff before it touches wobble gain, heading blend, width,
+or volume — strokes near the neck (where the motion is actually anchored, mechanically) respond
+more than strokes near the crown, rather than one uniform pulse applied identically across the
+whole head. Combined with `catchJitter`, no two nearby marks catch exactly the same share of it
+either.
+
+Verified at frame 0 (calm, duress off): the head now reads as a real oval built from the same
+vertical brush-lane texture as the neck/torso below it — same striping, same paint-load
+thick/thin cycling — rather than a smooth, separately-rendered disc. Verified at frame 300
+(duress on, head-joint speed ~16.6, one of the fastest frames in the trial): the head frays and
+streaks into the motion the same way a limb does under high motion — asymmetric bristling on the
+side catching more of the motion, not a rigid uniform smear — confirming the falloff/jitter
+combination reads as "softened and spread," not a constant force. `npx tsc --noEmit` clean
+throughout.
+
+**Added a "show heads" toggle** (`ToyParams.showHeads`, default true) per the user's explicit
+ask to hide heads while keeping them painted — `main.ts`'s `renderFrame` still calls
+`generateHeadMarks` every frame regardless of the toggle, only gating whether that output
+reaches `allStrokes` (and therefore the visible mesh). Verified live: unchecking hides the head
+immediately, re-checking restores it, both via a direct hash-driven load and via live toggling
+mid-session (pane's own change listener re-renders without a reload).

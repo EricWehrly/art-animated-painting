@@ -2,6 +2,7 @@ import type { PoseCache, JointMeta } from "./pose-cache";
 import { jointWorldPosition } from "./pose-cache";
 import type { Chain } from "./skeleton";
 import type { Stroke } from "./strokes";
+import { sampleBoneAtT } from "./emitters";
 
 /**
  * Joint indices the head needs, resolved once by name at load time (not per frame — the rig's
@@ -69,6 +70,13 @@ export interface HeadStyle {
   /** Same convention as BoneStrokeStyle.widthScale — scales the head's overall footprint so
    * the strokeWidthScale param affects it consistently with the rest of the figure. */
   widthScale: number;
+  /** Same meaning and role as BoneStrokeStyle's field of the same name — how strongly a
+   * mark's heading is pulled toward the neck->head bone's own sampled velocity, per unit
+   * speed. 0 (duress off) means the head paints with no motion response at all, matching how
+   * the rest of the figure goes still in calm mode. */
+  motionForceScale: number;
+  maxMotionForce: number;
+  smearScale: number;
 }
 
 function hash(n: number): number {
@@ -101,6 +109,23 @@ function cross(a: [number, number, number], b: [number, number, number]): [numbe
  * projection is what naturally foreshortens it: facing toward/away from the camera shows the
  * disc closer to full width, facing perpendicular to the camera (profile) collapses its
  * projected width toward a sliver. No manual foreshortening math needed, just real placement.
+ *
+ * Round 21's version filled that disc with a static jittered grid — geometrically correct, but
+ * it reads as a shape that was RENDERED and then perspective-distorted, not something that was
+ * PAINTED, because nothing about it worked the way pose/strokes.ts's limb coverage does: no
+ * paint load, no wobble, no response to motion. Round 22 ports that same brush-pass model into
+ * the oval's own 2D (up, side) frame: each "lane" is a vertical brush pass across the oval,
+ * with the SAME persistent paint-load-depletion and damped-wobble state a limb lane carries,
+ * and its own length is however far that lane's vertical chord actually spans the ellipse at
+ * its distance from center (edge lanes are short, the center lane is the full height) — the
+ * same "let the region's own shape decide coverage density" principle generateChainMarks uses.
+ *
+ * Motion intensity is sampled from the neck->head bone itself (real per-frame signal) but
+ * deliberately NOT applied as one uniform constant force to every mark — see `attachFalloff`
+ * and `catchJitter` below, which soften and spread it: strokes nearer the neck (where the
+ * motion is actually anchored) respond more than strokes near the crown, and no two nearby
+ * marks catch exactly the same share of it, the same de-correlation trick that fixed limbs
+ * reading as a mechanical "comb" under motion (see Round 19).
  */
 export function generateHeadMarks(
   cache: PoseCache,
@@ -144,69 +169,164 @@ export function generateHeadMarks(
     headPos[2] + up[2] * ry,
   ];
 
-  // A jittered GRID, not pure random rejection sampling — random scatter at these small counts
-  // reads as clumpy/cauliflower (Poisson noise: real gaps and real pile-ups both happen by
-  // chance), which is wrong for a shape that's supposed to read as one solid oval. A grid
-  // guarantees even coverage; the per-cell jitter below is what keeps it from looking like a
-  // literal dot matrix.
-  const targetSpacing = Math.max(0.22, Math.min(rx, ry) * 0.24);
-  const gridN = Math.max(3, Math.round((2 * Math.max(rx, ry)) / targetSpacing));
-  const cellHalf = 1 / gridN;
-  // Wider than the cell itself so neighboring marks overlap — same "generous overlap reads as
-  // one continuous surface" principle pose/strokes.ts's limb coverage relies on.
-  const dabSize = targetSpacing * 1.8;
+  // Same brush-pass scale as the limb system's defaults (see main.ts's strokeStyleFor) — the
+  // head should look like it's made of the same size of gesture as the rest of the figure, not
+  // its own miniature texture.
+  const markWidth = 0.8 * style.widthScale;
+  const stepLength = 1.3 * style.widthScale;
+  const stepOverlap = 0.5;
+  const wobbleAngle = 0.35;
+  const wobbleDamping = 0.35;
+  const paintCapacity = 4.5;
+  const dryMinLoad = 0.15;
+  const dryWidthFactor = 0.45;
+  const dryVolumeFactor = 0.4;
+  const maxHeadingDeviation = 0.38; // radians, ~22 degrees — same clamp as Round 19's limb fix
 
+  const numLanes = Math.max(3, Math.round((2 * rx) / markWidth));
   const idSalt = dancerIndex * 97411 + headJoints.headJoint * 733;
-  let markIndex = 0;
 
-  for (let gy = 0; gy < gridN; gy++) {
-    for (let gx = 0; gx < gridN; gx++) {
-      const cx = ((gx + 0.5) / gridN) * 2 - 1;
-      const cy = ((gy + 0.5) / gridN) * 2 - 1;
-      // A little generous beyond the true unit circle (1.0) — a hard cutoff at exactly the
-      // ellipse boundary reads as a stamped-out shape; letting the outermost ring of cells
-      // peek slightly past it gives the same soft, hand-painted edge the rest of the figure
-      // has (see stroke-mesh.ts's tear/taper edge shaping).
-      if (cx * cx + cy * cy > 1.15) continue;
+  for (let lane = 0; lane < numLanes; lane++) {
+    // -1..1 across the oval's width. A lane's own vertical run is however far the ellipse
+    // actually extends at this x-offset (a chord of the ellipse), not the oval's full height —
+    // short near the edges, longest through the center, the same way a limb's local width
+    // varies along its own length instead of being uniform.
+    const laneX = ((lane + 0.5) / numLanes) * 2 - 1;
+    const laneHalfHeight = Math.sqrt(Math.max(0, 1 - laneX * laneX));
+    if (laneHalfHeight < 0.08) continue; // a sliver lane right at the oval's edge — skip it
 
-      const idBase = idSalt + markIndex * 91.7;
-      markIndex++;
+    const laneSeed = idSalt + lane * 677;
+    const laneLength = laneHalfHeight * ry * 2;
+    const stepSpacing = Math.max(0.12, stepLength * 0.4 * (1 - stepOverlap));
+    const numSteps = Math.max(2, Math.round(laneLength / stepSpacing));
 
-      const jitterX = (hash(idBase + 0.3) - 0.5) * cellHalf * 1.3;
-      const jitterY = (hash(idBase + 0.7) - 0.5) * cellHalf * 1.3;
-      const sx = cx + jitterX;
-      const sy = cy + jitterY;
+    let paintLoad = 0.85 + hash(laneSeed + 0.11) * 0.15;
+    let wobble = (hash(laneSeed + 0.23) - 0.5) * wobbleAngle * 0.3;
+    let passPos: [number, number, number] = [
+      center[0] + side[0] * laneX * rx - up[0] * laneHalfHeight * ry,
+      center[1] + side[1] * laneX * rx - up[1] * laneHalfHeight * ry,
+      center[2] + side[2] * laneX * rx - up[2] * laneHalfHeight * ry,
+    ];
 
-      const pos: [number, number, number] = [
-        center[0] + side[0] * sx * rx + up[0] * sy * ry,
-        center[1] + side[1] * sx * rx + up[1] * sy * ry,
-        center[2] + side[2] * sx * rx + up[2] * sy * ry,
+    for (let step = 0; step < numSteps; step++) {
+      const stepId = laneSeed * 7 + step * 13;
+      // Inclusive endpoints (Round 20's fix) — the lane's own first/last step sit exactly at
+      // its chord's true ends, not half a slot short of them.
+      const isEndpoint = numSteps > 1 && (step === 0 || step === numSteps - 1);
+      const tBase = numSteps === 1 ? 0.5 : step / (numSteps - 1);
+      const tJitter = isEndpoint ? 0 : (hash(stepId) - 0.5) * (1 / numSteps) * 0.9;
+      const t = Math.max(0, Math.min(1, tBase + tJitter));
+
+      const laneY = -laneHalfHeight + t * laneHalfHeight * 2;
+      const idealPos: [number, number, number] = [
+        center[0] + side[0] * laneX * rx + up[0] * laneY * ry,
+        center[1] + side[1] * laneX * rx + up[1] * laneY * ry,
+        center[2] + side[2] * laneX * rx + up[2] * laneY * ry,
+      ];
+      const laneWidthRendered = (rx / numLanes) * 2.2;
+
+      // Sampled along the real physical neck->head bone, using t as the fraction — gives each
+      // lane's own steps a slightly different velocity sample for free, rather than one single
+      // frame-wide value applied everywhere.
+      const { velocity } = sampleBoneAtT(cache, headJoints.neckJoint, headJoints.headJoint, dancerIndex, frame, t);
+      const speed = Math.hypot(velocity[0], velocity[1], velocity[2]);
+      const forceBlend = Math.min(speed * style.motionForceScale, style.maxMotionForce);
+      const motionIntensity = style.maxMotionForce > 0 ? forceBlend / style.maxMotionForce : 0;
+
+      // "Soften and spread... rather than a constant force": strokes nearer the neck (low t,
+      // where the motion is actually anchored) carry more of it than strokes near the crown —
+      // a spatial falloff, not a uniform pulse applied identically across the whole head.
+      const attachFalloff = 1 - 0.35 * t;
+      const softenedIntensity = motionIntensity * attachFalloff;
+
+      const wobbleGain = 0.35 + softenedIntensity * 1.4;
+      wobble += (hash(stepId + 0.53) - 0.5) * wobbleAngle * wobbleGain;
+      wobble *= 1 - wobbleDamping;
+      const wobbleClamp = wobbleAngle * wobbleGain;
+      wobble = Math.max(-wobbleClamp, Math.min(wobbleClamp, wobble));
+      const cosW = Math.cos(wobble);
+      const sinW = Math.sin(wobble);
+      const baseHeading: [number, number, number] = [
+        up[0] * cosW + side[0] * sinW,
+        up[1] * cosW + side[1] * sinW,
+        up[2] * cosW + side[2] * sinW,
       ];
 
-      // Marks default to roughly vertical (like short brush strokes shading a portrait top to
-      // bottom), with enough jitter to avoid looking combed — same "always some jitter, even at
-      // rest" principle as pose/strokes.ts's chain marks.
-      const angle = (hash(idBase + 5.7) - 0.5) * 1.1;
-      const cosA = Math.cos(angle);
-      const sinA = Math.sin(angle);
-      const heading: [number, number, number] = [
-        up[0] * cosA + side[0] * sinA,
-        up[1] * cosA + side[1] * sinA,
-        up[2] * cosA + side[2] * sinA,
-      ];
+      const velDir = speed > 1e-4 ? normalize(velocity) : baseHeading;
+      // Round 19's de-correlation trick: how much of the available pull actually lands on THIS
+      // mark varies per-mark, so nearby strokes don't all lean the same amount in unison.
+      const catchJitter = 0.2 + hash(stepId + 1.21) * 0.8;
+      const effectiveForceBlend = forceBlend * catchJitter * attachFalloff;
+      let heading = normalize([
+        baseHeading[0] * (1 - effectiveForceBlend) + velDir[0] * effectiveForceBlend,
+        baseHeading[1] * (1 - effectiveForceBlend) + velDir[1] * effectiveForceBlend,
+        baseHeading[2] * (1 - effectiveForceBlend) + velDir[2] * effectiveForceBlend,
+      ]);
+      const alongUp = heading[0] * up[0] + heading[1] * up[1] + heading[2] * up[2];
+      if (alongUp < Math.cos(maxHeadingDeviation)) {
+        const crossComponent: [number, number, number] = [
+          heading[0] - up[0] * alongUp,
+          heading[1] - up[1] * alongUp,
+          heading[2] - up[2] * alongUp,
+        ];
+        const crossLen = Math.hypot(crossComponent[0], crossComponent[1], crossComponent[2]) || 1;
+        const cosMax = Math.cos(maxHeadingDeviation);
+        const sinMax = Math.sin(maxHeadingDeviation);
+        heading = [
+          up[0] * cosMax + (crossComponent[0] / crossLen) * sinMax,
+          up[1] * cosMax + (crossComponent[1] / crossLen) * sinMax,
+          up[2] * cosMax + (crossComponent[2] / crossLen) * sinMax,
+        ];
+      }
 
-      const length = dabSize * (1.3 + hash(idBase + 11.3) * 0.9);
-      const width = dabSize * (0.7 + hash(idBase + 13.7) * 0.6);
+      const lengthJitter = 0.6 + hash(stepId + 0.67) * 0.8;
+      const walkLength = Math.max(stepLength * 0.4 * 0.4, stepLength * 0.4 * lengthJitter);
+      const smearBonus = Math.min(speed * style.smearScale, 0.5);
+      const renderLength = walkLength * (1 + smearBonus);
+
+      const walked: [number, number, number] = [
+        passPos[0] + heading[0] * walkLength,
+        passPos[1] + heading[1] * walkLength,
+        passPos[2] + heading[2] * walkLength,
+      ];
+      const containmentPull = 0.75 - softenedIntensity * 0.2;
+      let anchor: [number, number, number] = [
+        walked[0] + (idealPos[0] - walked[0]) * containmentPull,
+        walked[1] + (idealPos[1] - walked[1]) * containmentPull,
+        walked[2] + (idealPos[2] - walked[2]) * containmentPull,
+      ];
+      const offset: [number, number, number] = [anchor[0] - idealPos[0], anchor[1] - idealPos[1], anchor[2] - idealPos[2]];
+      const offsetLen = Math.hypot(offset[0], offset[1], offset[2]);
+      const maxOffset = Math.max(laneWidthRendered * 2, 0.3);
+      if (offsetLen > maxOffset) {
+        const clampScale = maxOffset / offsetLen;
+        anchor = [idealPos[0] + offset[0] * clampScale, idealPos[1] + offset[1] * clampScale, idealPos[2] + offset[2] * clampScale];
+      }
+      passPos = anchor;
+
+      const loadFrac = Math.max(0, Math.min(1, paintLoad));
+      const dryWidthMul = dryWidthFactor + (1 - dryWidthFactor) * loadFrac;
+      const dryVolumeMul = dryVolumeFactor + (1 - dryVolumeFactor) * loadFrac;
+      const pressureNoise = 1 + 0.5 * (0.45 + softenedIntensity * 0.55) * (hash(stepId + 0.87) * 2 - 1);
+
+      const width = laneWidthRendered * dryWidthMul * pressureNoise * (1 - softenedIntensity * 0.35);
+      const volume = Math.max(0.05, 0.2 - softenedIntensity * 0.3 * 0.4) * dryVolumeMul * pressureNoise;
 
       strokes.push({
-        position: pos,
+        position: anchor,
         velocity: heading,
-        length,
+        length: renderLength,
         width,
-        volume: 0.16 + hash(idBase + 17.9) * 0.08,
+        volume,
         color: style.color,
-        seed: idBase * 0.6180339887,
+        seed: stepId * 0.6180339887,
       });
+
+      const consumed = renderLength / paintCapacity;
+      paintLoad -= consumed;
+      if (paintLoad <= dryMinLoad) {
+        paintLoad = 0.85 + hash(stepId + 1.03) * 0.15;
+      }
     }
   }
 

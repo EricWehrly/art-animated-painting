@@ -164,7 +164,16 @@ async function main() {
   function headStyleFor(dancerIndex: number): HeadStyle {
     const hex = params.duress ? (dancerIndex === 0 ? params.colorA : params.colorB) : params.colorA;
     const c = new THREE.Color(hex);
-    return { color: [c.r, c.g, c.b], widthScale: params.strokeWidthScale };
+    return {
+      color: [c.r, c.g, c.b],
+      widthScale: params.strokeWidthScale,
+      // Same values and duress-gating as strokeStyleFor's limb style — the head now responds
+      // to motion through the same mechanism, so it should be tuned the same way. See
+      // docs/work/pose-pipeline.md Round 22.
+      motionForceScale: params.duress ? 0.7 : 0,
+      maxMotionForce: params.duress ? 0.55 : 0,
+      smearScale: params.duress ? 0.8 : 0,
+    };
   }
 
   function speckleStyleFor(dancerIndex: number): SpeckleStyle {
@@ -209,7 +218,10 @@ async function main() {
         allStrokes.push(...generateSpeckles(emitters, frame, speckleStyleFor(dancerIndex)));
       }
       if (headJoints) {
-        allStrokes.push(...generateHeadMarks(cache, headJoints, dancerIndex, frame, headStyleFor(dancerIndex)));
+        // showHeads only gates what reaches the visible mesh below — generateHeadMarks itself
+        // still runs every frame either way, so toggling this back on doesn't skip a beat.
+        const headMarks = generateHeadMarks(cache, headJoints, dancerIndex, frame, headStyleFor(dancerIndex));
+        if (params.showHeads) allStrokes.push(...headMarks);
       }
     }
     strokeMesh.setStrokes(allStrokes);
