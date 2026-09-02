@@ -75,6 +75,41 @@ const quadFragmentShader = /* glsl */ `
     float coverage = clamp(colorSum.a, 0.0, 1.0);
     vec3 paintColor = colorSum.a > 0.0001 ? colorSum.rgb / colorSum.a : vec3(0.0);
 
+    // Round 2 tried to kill the vertical ridge "layering" by widening the height-sample tap
+    // COUNT (texelMul * uTexelSize) — looked right in a small preview, but uTexelSize is
+    // 1/canvas-resolution, so that offset silently SHRINKS in world/NDC space as the canvas
+    // gets bigger. At a real-size window the same tap count covers far less actual distance,
+    // and the ridges (a roughly fixed world-space wavelength, from stroke-mesh.ts's per-dab
+    // bristle spacing) come right back. blurRadius fixes that by being an NDC-space FRACTION,
+    // not a texel count — the same visual softening regardless of canvas resolution. Shared by
+    // both the height taps below and the color/coverage blur that follows, since both are the
+    // same underlying idea: how far has this paint's own structure spread/softened.
+    float blurRadius = mix(0.0, 0.02, uReliefReduction * wcMix);
+
+    // Soft, feathered edges + reduced internal color banding: real watercolor blooms into an
+    // organic edge rather than keeping the stroke-mesh's own hard silhouette, and its color
+    // pools smoothly rather than tracking each dab's own baked variation. Averaging a ring of
+    // neighbors and blending toward that average — on color AND coverage together, so the
+    // softened silhouette and softened internal color move as one — is the "masked screen-
+    // space blur" the survey listed as cheap and didn't use in Round 1.
+    if (blurRadius > 0.0005) {
+      vec3 blurColorSum = vec3(0.0);
+      float blurCovSum = 0.0;
+      const int TAPS = 8;
+      for (int i = 0; i < TAPS; i++) {
+        float angle = (float(i) / float(TAPS)) * 6.28318530718;
+        vec2 offset = vec2(cos(angle), sin(angle)) * blurRadius;
+        vec4 s = texture(uColorSum, vUv + offset);
+        blurCovSum += s.a;
+        blurColorSum += s.rgb;
+      }
+      float avgCov = blurCovSum / float(TAPS);
+      vec3 avgColor = blurCovSum > 0.0001 ? blurColorSum / blurCovSum : vec3(0.0);
+      float blend = uReliefReduction * wcMix;
+      paintColor = mix(paintColor, avgColor, blend * 0.7);
+      coverage = mix(coverage, avgCov, blend * 0.65);
+    }
+
     // Desaturation / color shift toward a muted, cooler, more transparent palette.
     float lum = dot(paintColor, vec3(0.299, 0.587, 0.114));
     vec3 muted = mix(paintColor, vec3(lum), uDesaturation * wcMix * 0.85);
@@ -91,22 +126,24 @@ const quadFragmentShader = /* glsl */ `
     // fine spacing is still the same fine-frequency ridge pattern, so it can keep reading as
     // brush-bristle "layering" even once dimmed. Oil strokes get that vertical ridging from
     // stroke-mesh.ts's own per-dab bristle bumps; real watercolor washes don't have that
-    // structure at all. texelMul widens the sampling distance itself as wcMix grows, which
-    // blurs the ridge FREQUENCY (not just its lighting response) — adjacent ridges get
-    // averaged together into smooth undulation rather than staying sharp but faint.
+    // structure at all. The tap offset below blends the original 1-texel spacing (so wcMix=0
+    // stays pixel-for-pixel identical to plain oil, at any resolution) with blurRadius — an
+    // NDC-space fraction, not a texel count, so this blur stays the same visual size on a
+    // large canvas as it is here, unlike the texel-count version Round 2 shipped.
     float reliefScale = 1.0 - uReliefReduction * wcMix;
     float effectiveRelief = uReliefStrength * reliefScale;
-    float texelMul = mix(1.0, 11.0, uReliefReduction * wcMix);
+    vec2 tap = uTexelSize + vec2(blurRadius);
+    vec2 tap2 = uTexelSize * 3.0 + vec2(blurRadius * 2.5);
 
     float h = heightAt(vUv);
-    float hL = heightAt(vUv - vec2(uTexelSize.x * texelMul, 0.0));
-    float hR = heightAt(vUv + vec2(uTexelSize.x * texelMul, 0.0));
-    float hD = heightAt(vUv - vec2(0.0, uTexelSize.y * texelMul));
-    float hU = heightAt(vUv + vec2(0.0, uTexelSize.y * texelMul));
-    float hL2 = heightAt(vUv - vec2(uTexelSize.x * texelMul * 3.0, 0.0));
-    float hR2 = heightAt(vUv + vec2(uTexelSize.x * texelMul * 3.0, 0.0));
-    float hD2 = heightAt(vUv - vec2(0.0, uTexelSize.y * texelMul * 3.0));
-    float hU2 = heightAt(vUv + vec2(0.0, uTexelSize.y * texelMul * 3.0));
+    float hL = heightAt(vUv - vec2(tap.x, 0.0));
+    float hR = heightAt(vUv + vec2(tap.x, 0.0));
+    float hD = heightAt(vUv - vec2(0.0, tap.y));
+    float hU = heightAt(vUv + vec2(0.0, tap.y));
+    float hL2 = heightAt(vUv - vec2(tap2.x, 0.0));
+    float hR2 = heightAt(vUv + vec2(tap2.x, 0.0));
+    float hD2 = heightAt(vUv - vec2(0.0, tap2.y));
+    float hU2 = heightAt(vUv + vec2(0.0, tap2.y));
 
     vec3 normal = normalize(vec3((hL - hR) * effectiveRelief, (hD - hU) * effectiveRelief, 1.0));
 
@@ -123,7 +160,7 @@ const quadFragmentShader = /* glsl */ `
     // The wide-kernel AO below was, in Round 1, computed straight from the raw height field —
     // reliefScale never reached it, so ridge-to-ridge valley shadowing kept reading as the
     // exact same brush-bristle "layering" at every band, independent of the relief slider.
-    // Widening the taps above (texelMul) already blurs the ridge FREQUENCY feeding into this;
+    // Widening the taps above (blurRadius) already blurs the ridge FREQUENCY feeding into this;
     // scaling the shadow's own STRENGTH down by reliefScale on top of that removes what's left
     // — the combination is what actually kills the striping, not either alone.
     float variance = abs(hL - h) + abs(hR - h) + abs(hU - h) + abs(hD - h);
@@ -147,8 +184,11 @@ const quadFragmentShader = /* glsl */ `
     // brightness ramp — a cheap texture multiply using the same grain hash the ground below
     // already computes (see watercolor-aging.md's survey: "safer short-term" than inventing a
     // second noise source ahead of watercolor-ground's real paper tooth). Coarser-scaled than
-    // the ground's own grain so it reads as blotchy pigment density, not screen noise.
-    float granulationNoise = hash21(floor(gl_FragCoord.xy * 0.12));
+    // the ground's own grain so it reads as blotchy pigment density, not screen noise. Keyed
+    // off vUv (screen-fraction) rather than gl_FragCoord (raw pixel coords) — the same
+    // resolution-independence fix as blurRadius above; a pixel-frequency noise would give
+    // finer, less visible blotches on a larger canvas than what gets tuned here.
+    float granulationNoise = hash21(floor(vUv * 90.0));
     float granulation = mix(1.0, mix(0.72, 1.18, granulationNoise), uGranulation * wcMix);
     thickPaint *= granulation;
 
@@ -210,7 +250,7 @@ export function createWatercolorShadingPass(): WatercolorShadingPassHandle {
       uGroundColor: { value: new THREE.Color(0x4a4032) },
       uEdgeDarken: { value: 0.6 },
       // Raised from Round 1's 0.7 — the user's follow-up asked to push oil's built-up texture
-      // down further as paint ages; see the AO/texelMul changes above this now actually reaches.
+      // down further as paint ages; see the AO/blurRadius changes above this now actually reaches.
       uReliefReduction: { value: 0.85 },
       uDesaturation: { value: 0.6 },
       uGranulation: { value: 0.35 },

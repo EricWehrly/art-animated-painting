@@ -327,3 +327,54 @@ fully reachable by widening point-sampled taps without either a real blur pass (
 target — medium tier, out of scope for a shader-only prototype) or pushing taps wide enough to
 risk sampling artifacts elsewhere. Flagged as an honest limit of the cheap approach rather than
 chased further this round. `npx tsc --noEmit` clean; no console errors.
+
+## Round 3 — the Round 2 fix was resolution-dependent, plus a real color/edge blur
+
+User sent a screenshot from their own browser (at real window size) next to a reference
+watercolor bird painting: the ridging Round 2's testing called "gone" was still clearly present
+for them, and the reference made a sharper case for what's actually missing — real washes bloom
+into soft, organic edges and their color pools smoothly; ours still had a hard silhouette and
+internal streakiness even where ridging had faded.
+
+**Root cause of the ridging still showing: `texelMul` scaled `uTexelSize`, and `uTexelSize` is
+`1/canvas-resolution`.** Round 2 was tuned and screenshotted at a small preview canvas
+(~800x450). At that size, `uTexelSize.x * 11` covers a meaningful fraction of the screen — real
+blur. At the user's actual window size (roughly 1800x700+), the exact same tap COUNT covers a
+proportionally tiny fraction of the screen, since each texel is a smaller slice of a bigger
+canvas — the blur radius silently shrinks as the canvas gets bigger, and the ridges (a fixed
+world-space wavelength, from stroke-mesh.ts's per-dab bristle spacing) come right back. Nothing
+about the *logic* was wrong; the units were. Reproduced directly by testing this project's own
+code at 1800x700 instead of the small default preview — the ridging was clearly still there,
+confirming the diagnosis before attempting a fix.
+
+**Fix: a `blurRadius` expressed as an NDC-space fraction, not a texel count**, additively
+combined with the original 1-texel spacing (`tap = uTexelSize + vec2(blurRadius)`) so wcMix = 0
+(pure oil) stays pixel-for-pixel identical to before at any resolution — only the blur term,
+which only exists when wcMix > 0, is resolution-independent. `granulation`'s noise had the same
+bug in miniature (keyed off `gl_FragCoord`, raw pixel coordinates, so its blotch size also
+shrank on a bigger canvas) — switched to `vUv` for the same reason.
+
+**Added a real color/coverage blur, not just a height/lighting one.** Round 2's fixes only ever
+touched how height affects *lighting* — the actual accumulated paint color and the stroke's own
+silhouette (from `wcCoverage`) were never touched, which is why edges still read as the stroke-
+mesh's own hard, wavy boundary rather than a soft bloom, and internal color still tracked each
+dab's own baked variation. An 8-tap ring average of `uColorSum` (color and coverage together, so
+the silhouette and the internal color soften as one), blended in at the same `blurRadius`, is
+the "feathered/soft edges as a masked screen-space blur" technique the original survey listed as
+cheap and Round 1 didn't use.
+
+**Tuning found a real ceiling fast: the first attempt at resolution-independent blur
+(`blurRadius` up to 0.045, blended at 0.75-0.85) dissolved the strokes into a formless pale haze
+at real window size** — the reference photo's washes stay clearly shaped (wing, body, branch all
+legible) even where soft, so full dissolution overshot the target. Settled on `blurRadius` up to
+0.02 and blend weights of 0.55-0.7 after testing specifically at 1800x700 (not the small
+preview) — softened and pale with legible shape retained, edges visibly blooming into the
+ground rather than cutting hard. Some faint texture remains inside the wash at full mix; judged
+as an acceptable middle ground rather than tuned toward zero, since some internal variation
+reads as brush character rather than a flaw — worth another look once compared side-by-side
+with the reference again.
+
+Lesson for any future shader-space tuning on this page: **verify at a real/large window size,
+not just the small default preview** — Round 2's own verification screenshot looked convincing
+and was wrong at the size that actually mattered. `npx tsc --noEmit` clean; no console errors,
+checked at 1800x700.
