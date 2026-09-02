@@ -19,7 +19,13 @@ as *on top*. They are not mutually exclusive, and the plan is to build them as i
 simultaneously-active parameters rather than picking one up front:
 
 - **Hue shift** — topmost layer gets its own color, everything below tends toward a common
-  tone.
+  tone. Concrete candidates, not yet chosen between: **complementary shift** (topmost layer's
+  hue rotated ~180° from the layer(s) beneath), **desaturation** (topmost stays same hue, just
+  more saturated — older paint desaturates toward the common tone instead of shifting hue), or
+  some other chroma effect (value shift, a fixed accent hue regardless of source color). Expose
+  as a live-tunable parameter following the existing Tweakpane pattern in
+  `src/shell/params.ts` (`pane.addBinding(params, ..., { min, max, step, label })`) so the
+  three read as switchable/blendable options rather than a single hardcoded mechanism.
 - **Saturation falloff** — saturation halves per layer while value holds.
 - **Opacity falloff** — the straightforward reading, already provided by the decay in
   [paint-accumulator](paint-accumulator.md).

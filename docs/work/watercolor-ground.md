@@ -13,6 +13,12 @@ The stated goal is oils sitting on a watercolor canvas. The interesting part is 
 background image — it is the *interaction* between a rough, absorbent ground and thick paint
 laid over it.
 
+This item is the **substrate** only — the paper the paint sits on. What happens to the paint
+*itself* as it ages (oil impasto converting toward a watercolor treatment as it settles into
+paint-accumulator's older stages) is a related but separate concern — see
+[watercolor-aging](watercolor-aging.md), which depends on this item for shared paper-grain
+texture.
+
 ## The ground itself
 
 Pre-baked once at load, not simulated per frame:
