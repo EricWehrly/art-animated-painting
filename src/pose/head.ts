@@ -223,7 +223,17 @@ export function generateHeadMarks(
         center[1] + side[1] * laneX * rx + up[1] * laneY * ry,
         center[2] + side[2] * laneX * rx + up[2] * laneY * ry,
       ];
-      const laneWidthRendered = (rx / numLanes) * 2.2;
+      // BUG (found responding to the user's "trident people" screenshot): this divided by rx
+      // (the oval's HALF-width) where generateChainMarks' equivalent divides by the limb's FULL
+      // local width — see strokes.ts's `const laneWidthRendered = (localWidth / numLanes) * 1.6`.
+      // Using half-width here with a 2.2 multiplier was still only ~1.1x the lane spacing (half
+      // of limbs' ~1.6x overlap margin), not enough margin to survive dry-brush width shrinkage
+      // (dryWidthFactor down to 0.45x) or motion-driven thinning — lanes lost contact with their
+      // neighbours and read as separate fingers/prongs instead of one filled oval, exactly the
+      // "gaps miss the whole point of wanting to fill this area in" complaint. Matches
+      // strokes.ts's formula exactly now (full width / numLanes * 1.6), same overlap margin
+      // limbs already rely on. See docs/work/pose-pipeline.md Round 24.
+      const laneWidthRendered = ((2 * rx) / numLanes) * 1.6;
 
       // Sampled along the real physical neck->head bone, using t as the fraction — gives each
       // lane's own steps a slightly different velocity sample for free, rather than one single

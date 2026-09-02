@@ -1234,3 +1234,37 @@ ask to hide heads while keeping them painted — `main.ts`'s `renderFrame` still
 reaches `allStrokes` (and therefore the visible mesh). Verified live: unchecking hides the head
 immediately, re-checking restores it, both via a direct hash-driven load and via live toggling
 mid-session (pane's own change listener re-renders without a reload).
+
+### Round 24: "trident people" — the lane-overlap math was quietly wrong, not the brush-pass model
+
+User's framing, with an annotated screenshot circling the crown of the head: "You've turned our
+'worm people' now into strange 'trident people'... These gaps miss the whole point of 'I as a
+painter' want to fill this area in... The initial head implementation of course did [fill the
+area], with perspective, but still fails to give us these glorious stroke properties." Explicitly
+named this as the same class of complaint raised before about the torso — visible background
+showing through gaps between adjacent lanes, reading as separated fingers/prongs rather than one
+filled region, regardless of how good any individual lane's own brush texture looks.
+
+**Root cause: a copy-paste-shaped unit mismatch, not a design flaw in the brush-pass model
+itself.** `generateChainMarks` (the limb code Round 23 explicitly set out to reuse) computes a
+lane's rendered width as `(localWidth / numLanes) * 1.6`, where `localWidth` is the limb's FULL
+width at that point — a deliberate ~60% overlap margin (see that function's own comment: "widen
+each lane's own rendered width a bit beyond [an even division]... otherwise adjacent lanes' soft
+edges leave a visible gap"). `generateHeadMarks` computed the equivalent as `(rx / numLanes) *
+2.2`, but `rx` is the oval's HALF-width, not its full width — so despite the larger-looking 2.2
+multiplier, the actual overlap margin came out to roughly half of what limbs use (~1.1x lane
+spacing instead of ~1.6x). That margin was thin enough that ordinary dry-brush width shrinkage
+(down to 0.45x on a depleted lane) or motion-driven thinning could erase it entirely, opening a
+real gap between neighbouring lanes — and with only ~4-6 lanes across a small oval, each gap was
+wide enough to read as a distinct missing finger, not a subtle texture variation.
+
+Fix: `laneWidthRendered` now reads `((2 * rx) / numLanes) * 1.6` — the exact same formula and
+margin `generateChainMarks` already uses, just expressed in the oval's own half-width unit.
+
+Verified: at rest (frame 0, calm and duress-on-but-static), the head now reads as one continuous
+filled oval with visible internal brush-lane texture (ridges, thick/thin paint-load cycling) —
+no background showing through between lanes, replicated in both the single-dancer close framing
+used for Round 23's own verification and a fresh both-dancers/duress composition matching the
+user's own screenshot. Re-checked under motion (frame 300, duress on, head-joint speed ~16.6):
+the interior stays solid/filled, with fraying confined to the silhouette's own edge (the existing
+motion-response behaviour), not reopening gaps through the middle. `npx tsc --noEmit` clean.
