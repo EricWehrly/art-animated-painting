@@ -53,14 +53,21 @@ export async function loadPoseCache(baseUrl = "/data", pairId?: string): Promise
   return { header, positions: new Float32Array(binResponse) };
 }
 
-/** All baked trial pair ids, in trial order, for populating the picker in src/shell/params.ts.
- * Hardcoded rather than discovered at runtime (no directory listing available over HTTP) —
- * keep in sync with which `pose-cache-<id>.*` files scripts/bake-pose.mjs has actually produced
- * into public/data. All 15 CMU 60/61 salsa trial pairs were verified as valid (matching rigs,
- * matching frame counts, plausible partner distance) and baked — see docs/roadmap.md. */
+/** All baked trial pair ids, in trial order, for populating the "dance" picker in
+ * src/shell/params.ts. Hardcoded rather than discovered at runtime (no directory listing
+ * available over HTTP) — keep in sync with which `pose-cache-<id>.*` files
+ * scripts/bake-pose.mjs has actually produced into public/data. All 15 CMU 60/61 salsa trial
+ * pairs were verified as valid (matching rigs, matching frame counts, plausible partner
+ * distance) and baked — see docs/roadmap.md.
+ *
+ * Labels are plain "Salsa N", not real per-dance names: checked CMU's own site, Bruce Hahne's
+ * (cgspeed) index, and the una-dinosauria/cmu-mocap mirror's own index text — all three
+ * independently list every one of these 30 trials (60_01-15, 61_01-15) with the identical
+ * generic description "salsa dance," no per-trial figure/pattern name anywhere. See
+ * docs/credits.md. */
 export const AVAILABLE_TRIAL_PAIRS: { id: string; label: string }[] = Array.from({ length: 15 }, (_, i) => {
   const id = String(i + 1).padStart(2, "0");
-  return { id, label: `60_${id} / 61_${id}` };
+  return { id, label: `Salsa ${i + 1}` };
 });
 
 /**

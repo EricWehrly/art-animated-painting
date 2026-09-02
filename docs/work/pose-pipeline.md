@@ -1268,3 +1268,29 @@ used for Round 23's own verification and a fresh both-dancers/duress composition
 user's own screenshot. Re-checked under motion (frame 300, duress on, head-joint speed ~16.6):
 the interior stays solid/filled, with fraying confined to the silhouette's own edge (the existing
 motion-response behaviour), not reopening gaps through the middle. `npx tsc --noEmit` clean.
+
+### Round 25: renamed the "trial pair" picker to "dance," confirmed there really are no names to give it
+
+User's ask: name each of the 15 salsa pairs individually, since "actual salsa dancing has to
+have individual names for each of them" — and rename the picker itself from "trial pair" to
+"dance," falling back to plain "Salsa 1" through "Salsa 15" only if no real names can be found.
+
+Checked three independent sources beyond the single one Round 22's credits research already
+used: CMU's own `search.php` per-subject listing (re-confirmed), Bruce Hahne's (cgspeed) original
+motion-index text (`cmu-mocap-index-text.txt`, hosted in the same `una-dinosauria/cmu-mocap`
+repo this project already pulls BVH from), and cgspeed's own published "BVH conversion release
+motions list" page. All three list every one of subject 60 and 61's 30 trials with the identical
+generic description "salsa dance" — no per-trial figure or pattern name exists in any of them.
+Real salsa dance figures do have names (cross-body lead, enchufla, etc.), but nothing in this
+dataset's own metadata says which figure any given trial actually contains, and guessing from
+raw joint-position data alone (no video, no labels) would be inventing an answer, not finding
+one — so per the user's own explicit fallback, the picker now reads "Salsa 1" through "Salsa 15"
+rather than a real per-dance name.
+
+Changes: `AVAILABLE_TRIAL_PAIRS` in `pose-cache.ts` now labels each pair `Salsa ${n}` instead of
+`60_NN / 61_NN`; the params-panel binding's label changed from "trial pair" to "dance" (the
+underlying `ToyParams.trialPair` field/hash key is unchanged — this is a display-only rename,
+no round-trip format change). `docs/credits.md` updated to name the third confirming source and
+describe the current label scheme accurately. Verified live: the panel shows "dance" with
+"Salsa 1" selected by default and all 15 "Salsa N" options present in order. `npx tsc --noEmit`
+clean, no console errors.

@@ -196,7 +196,7 @@ export function createParamsPanel(container: HTMLElement, params: ToyParams): Pa
   const trialPairOptions: Record<string, string> = {};
   for (const pair of AVAILABLE_TRIAL_PAIRS) trialPairOptions[pair.label] = pair.id;
   const trialPairBinding = pane.addBinding(params, "trialPair", {
-    label: "trial pair",
+    label: "dance",
     options: trialPairOptions,
   });
   trialPairBinding.on("change", () => {

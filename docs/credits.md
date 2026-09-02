@@ -9,15 +9,19 @@ imports this file's raw text and renders it directly, so the two can't drift apa
 The two dancers are performed by real motion-capture data: subjects **60** and **61** of the
 [CMU Graphics Lab Motion Capture Database](http://mocap.cs.cmu.edu/), each captured performing
 15 numbered salsa trials (`60_01`-`60_15`, `61_01`-`61_15`). All 15 pairs are baked into this
-toy and selectable from the "trial pair" picker in the params panel.
+toy and selectable from the "dance" picker in the params panel, labeled plainly "Salsa 1"
+through "Salsa 15" rather than named routines.
 
 CMU's own database lists both subjects simply as "salsa (15 trials)", and every single trial's
 motion description reads identically "salsa dance" - there is no per-trial name or description
-to draw on, which is why this toy's trial-pair picker shows plain numbers rather than named
-routines. For comparison, CMU does explicitly label some *other* subject pairs in its database
-as paired captures, with real per-trial descriptions - e.g. subjects 18/19 ("human interaction
-and communication (2 subjects - subject A/B)"), 20/21, 22/23, and 33/34 ("throw and catch
-football"). Subjects 60/61 carry no such explicit pairing label or per-trial text.
+to draw on. Checked three independent sources looking for one anyway: CMU's own site
+(`search.php`), Bruce Hahne's (cgspeed) original index, and the una-dinosauria/cmu-mocap
+mirror's own index text - all three list every one of these 30 trials with that same identical
+generic description, no per-trial figure/pattern name anywhere. For comparison, CMU does
+explicitly label some *other* subject pairs in its database as paired captures, with real
+per-trial descriptions - e.g. subjects 18/19 ("human interaction and communication (2 subjects
+- subject A/B)"), 20/21, 22/23, and 33/34 ("throw and catch football"). Subjects 60/61 carry no
+such explicit pairing label or per-trial text.
 
 That `60_NN` and `61_NN` are the same physical performance, captured simultaneously from two
 people's marker sets, is this project's own conclusion, verified directly from the data rather
