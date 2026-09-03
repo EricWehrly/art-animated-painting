@@ -185,11 +185,39 @@ distinctive is there at all*. Shipped as `AVAILABLE_TRIAL_PAIRS`' three exceptio
 `pose-cache.ts` (`"Salsa 6 — Hammerlock"` etc.), the other 12 stay plain `"Salsa N"`.
 
 The other 12 of 15 dances show only the universal Cross Body Lead / Basic Step / Right Turn
-signal, which is real but not usable as a distinguishing name — no further reference-pulling is
-expected to help those specifically, since the gap there is "no distinctive event detected," not
-"detected event needs better calibration." A different signal family (footwork/weight-transfer,
-styling, shines — currently undetected since all analysis so far is hip-rotation/position only)
-is the more likely route to finding anything for them, if ever pursued.
+signal, which is real but not usable as a distinguishing name.
+
+## Method, round 5: footwork/styling — tried, came up empty
+
+Follow-up ask: the rotation-family signal is exhausted for the remaining 12 — does a footwork or
+styling signal do any better? Widened the same CoMPAS3D annotation tally (already-downloaded
+files, no new pull) to the footwork/styling classes skipped earlier: Suzy Q (0.96%), Body roll
+(0.24%), Standing (0.21%), Point (0.24%), Drawing circle/Swing/Body Shake/walks around (all
+≤0.14%), Check (3.36%), Comb (3.53%). Reading real examples of each showed Check and Comb are
+both hold/contact-defined (a leader's hand touching the follower's shoulder or hand mid-figure)
+— the same compound-phrase, hold-state-inference problem that already limited Hammerlock/
+Enchufla precision in round 4, so not worth re-attempting here. Suzy Q and Body Roll are pure
+single-body signatures (no hold-state needed) and were the two actually built:
+
+- **Body Roll** — spine-relative-to-hips front/back sway amplitude, gated on the hips
+  themselves staying in place (height and ground position both). Zero windows crossed threshold
+  in any of the 12 dances. Consistent with its 0.24% real-world rarity — a legitimate null
+  result given only 12 short clips to search, not evidence the detector is broken.
+- **Suzy Q** — per-foot heading oscillation (high total rotation, near-zero net, unlike a real
+  turn) gated on the hips barely traveling. Found several candidate windows, including one
+  (Salsa 2, dancer 2, frames 290–335) with the cleanest numbers of the whole set — both feet
+  oscillating with under 4% net drift each. Rendered it directly to check: **it's an ordinary
+  front-back stepping stride** (weight rocking forward onto one foot then back), not the
+  bent-knee, feet-splayed fanning Suzy Q actually looks like. The detector can't tell "twisting
+  feet in place" from "the ordinary heel/toe pivot every basic step naturally produces" — it
+  isn't checking knee bend or foot separation, the features that would actually distinguish
+  them. This is a real specification gap in the detector, not a promising lead worth chasing
+  further without rebuilding it around those features.
+
+**Conclusion: footwork/styling did not turn up anything defensible.** No label changes from
+this round — the honest result is a clean negative (Body Roll) and a detector that isn't
+specific enough to trust (Suzy Q), recorded here so this exact search isn't re-run from scratch
+later. The remaining 12 dances stay plain `"Salsa N"`.
 
 ## Sources
 
