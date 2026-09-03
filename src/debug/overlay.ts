@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import type { PoseCache } from "../pose/pose-cache";
-import { jointWorldPosition } from "../pose/pose-cache";
+import { resolveJointPosition } from "../pose/pose-cache";
 import type { Chain } from "../pose/skeleton";
 import type { ChainDebugDab } from "../pose/strokes";
 
@@ -97,8 +97,8 @@ export function createDebugOverlay(): DebugOverlayHandle {
       const outlinePts: number[] = [];
       for (const chain of chains) {
         for (let i = 0; i < chain.jointPath.length - 1; i++) {
-          const a = jointWorldPosition(cache, dancerIndex, frame, chain.jointPath[i]);
-          const b = jointWorldPosition(cache, dancerIndex, frame, chain.jointPath[i + 1]);
+          const a = resolveJointPosition(cache, dancerIndex, frame, chain.jointPath[i]);
+          const b = resolveJointPosition(cache, dancerIndex, frame, chain.jointPath[i + 1]);
           outlinePts.push(a[0], a[1], a[2], b[0], b[1], b[2]);
         }
       }

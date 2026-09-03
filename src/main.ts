@@ -16,7 +16,7 @@ import {
   type SpeckleStyle,
   type ChainDebugDab,
 } from "./pose/strokes";
-import { findHeadJoints, truncateHeadChain, generateHeadMarks, type HeadStyle } from "./pose/head";
+import { findHeadJoints, truncateHeadChain, buildHeadCrownChain } from "./pose/head";
 import { createStrokeMesh } from "./paint/stroke-mesh";
 import { createHeightPass } from "./paint/height-pass";
 import { createShadingPass } from "./paint/shading-pass";
@@ -48,9 +48,12 @@ async function main() {
   // painted stroke's own tip — see docs/work/pose-pipeline.md Round 14.
   // The neck+head chain otherwise walks all the way to the head's own end site and gets the
   // same tapering-tube treatment as any limb — a small stub at the end of a shrinking tube,
-  // which is what read as a "worm." headJoints is null only if the rig lacks named shoulders
-  // (findHeadJoints' fallback contract) — chains stays untouched in that case, and the head
-  // just keeps the old tube treatment rather than the toy failing to load.
+  // which is what read as a "worm." Cut at the head joint here; the head's own coverage past
+  // that point is a separate chain built fresh every frame (pose/head.ts's
+  // buildHeadCrownChain, called from renderFrame below), not part of this static array.
+  // headJoints is null only if the rig lacks named shoulders (findHeadJoints' fallback
+  // contract) — chains stays untouched in that case, and the head just keeps the old tube
+  // treatment rather than the toy failing to load.
   const headJoints = findHeadJoints(cache.header.joints);
   const chains = headJoints ? truncateHeadChain(buildChains(cache.header.joints), headJoints) : buildChains(cache.header.joints);
   const frameCount = cache.header.frameCount;
@@ -63,8 +66,9 @@ async function main() {
   // contribute one emitter), rather than an independent bone-based estimate.
   const maxMarksPerChainEstimate = 90;
   const mainMarksTotal = chains.length * maxMarksPerChainEstimate * cache.header.dancers.length;
-  // generateHeadMarks' own count formula tops out well under this per dancer — generous
-  // headroom, same spirit as the chain estimate above.
+  // The crown chain (pose/head.ts) is small (CROWN_SEGMENTS segments) but goes through the
+  // same generateChainMarks headroom logic as any other chain — generous, same spirit as the
+  // main estimate above.
   const maxHeadMarks = 400 * cache.header.dancers.length;
   const maxStrokes = mainMarksTotal + mainMarksTotal * speckleMaxCount + maxHeadMarks;
 
@@ -161,21 +165,6 @@ async function main() {
     };
   }
 
-  function headStyleFor(dancerIndex: number): HeadStyle {
-    const hex = params.duress ? (dancerIndex === 0 ? params.colorA : params.colorB) : params.colorA;
-    const c = new THREE.Color(hex);
-    return {
-      color: [c.r, c.g, c.b],
-      widthScale: params.strokeWidthScale,
-      // Same values and duress-gating as strokeStyleFor's limb style — the head now responds
-      // to motion through the same mechanism, so it should be tuned the same way. See
-      // docs/work/pose-pipeline.md Round 22.
-      motionForceScale: params.duress ? 0.7 : 0,
-      maxMotionForce: params.duress ? 0.55 : 0,
-      smearScale: params.duress ? 0.8 : 0,
-    };
-  }
-
   function speckleStyleFor(dancerIndex: number): SpeckleStyle {
     const hex = dancerIndex === 0 ? params.colorA : params.colorB;
     const c = new THREE.Color(hex);
@@ -210,18 +199,23 @@ async function main() {
       // the base figure) in calm calibration mode; strokeStyleFor sets speckleSpeedThreshold
       // to Infinity in that case so no emitter is ever pushed, rather than gating here too.
       const emitters: Emitter[] | undefined = params.duress && params.speckleAmount > 0 ? [] : undefined;
-      allStrokes.push(
-        ...generateChainMarks(cache, chains, dancerIndex, frame, strokeStyleFor(dancerIndex), viewForward, debugDabs, emitters)
-      );
+      const style = strokeStyleFor(dancerIndex);
+      allStrokes.push(...generateChainMarks(cache, chains, dancerIndex, frame, style, viewForward, debugDabs, emitters));
       if (debugDabs) debugDancers.push({ dancerIndex, debugDabs });
       if (emitters) {
         allStrokes.push(...generateSpeckles(emitters, frame, speckleStyleFor(dancerIndex)));
       }
       if (headJoints) {
-        // showHeads only gates what reaches the visible mesh below — generateHeadMarks itself
-        // still runs every frame either way, so toggling this back on doesn't skip a beat.
-        const headMarks = generateHeadMarks(cache, headJoints, dancerIndex, frame, headStyleFor(dancerIndex));
-        if (params.showHeads) allStrokes.push(...headMarks);
+        // The crown is its own chain (see pose/head.ts's buildHeadCrownChain), fed through the
+        // exact same generateChainMarks/style as every limb above — no separate head-only
+        // renderer or style object anymore. Built fresh every frame (unlike `chains`, static
+        // rig topology decided once at boot) because its size depends on shoulder width, a
+        // per-frame quantity. showHeads only gates whether this second call's output reaches
+        // allStrokes — the neck's own tube (part of `chains` above) always paints regardless,
+        // matching the toggle's "hide the head, but keep the rest painting" contract.
+        const crownChain = buildHeadCrownChain(cache, headJoints, dancerIndex, frame);
+        const crownMarks = generateChainMarks(cache, [crownChain], dancerIndex, frame, style, viewForward, debugDabs);
+        if (params.showHeads) allStrokes.push(...crownMarks);
       }
     }
     strokeMesh.setStrokes(allStrokes);

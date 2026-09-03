@@ -1,9 +1,12 @@
-import type { JointMeta } from "./pose-cache";
+import type { JointMeta, JointRef } from "./pose-cache";
+import { realJoint } from "./pose-cache";
 
 export interface Chain {
-  /** Ordered joint indices from this chain's start (the root, or a branch point) to its end
-   * (a leaf, or the next branch point where child chains continue). */
-  jointPath: number[];
+  /** Ordered joint refs from this chain's start (the root, or a branch point) to its end
+   * (a leaf, or the next branch point where child chains continue). Real rig joints for every
+   * chain `buildChains` produces below — pose/head.ts's crown extension is the one caller that
+   * builds a `Chain` with `extrapolated` refs mixed in, for its own points with no rig joint. */
+  jointPath: JointRef[];
   /** Per-segment thickness — thickness[i] belongs to the (jointPath[i] -> jointPath[i+1])
    * bone. One shorter than jointPath. */
   thickness: number[];
@@ -29,12 +32,12 @@ export function buildChains(joints: JointMeta[]): Chain[] {
 
   function walk(startJoint: number) {
     for (const firstChild of children[startJoint]) {
-      const jointPath = [startJoint, firstChild];
+      const jointPath: JointRef[] = [realJoint(startJoint), realJoint(firstChild)];
       const thickness = [boneThickness(joints[firstChild].name)];
       let current = firstChild;
       while (children[current].length === 1) {
         const next = children[current][0];
-        jointPath.push(next);
+        jointPath.push(realJoint(next));
         thickness.push(boneThickness(joints[next].name));
         current = next;
       }

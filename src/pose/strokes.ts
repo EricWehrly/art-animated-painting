@@ -1,5 +1,5 @@
-import type { PoseCache } from "./pose-cache";
-import { jointWorldPosition } from "./pose-cache";
+import type { PoseCache, JointRef } from "./pose-cache";
+import { resolveJointPosition } from "./pose-cache";
 import type { Chain } from "./skeleton";
 import { sampleBoneAtT, type Emitter } from "./emitters";
 
@@ -194,8 +194,8 @@ export function generateChainMarks(
     // body. See docs/work/pose-pipeline.md Round 19.
     interface SegmentGeo {
       segIndex: number;
-      parentIndex: number;
-      childIndex: number;
+      parentRef: JointRef;
+      childRef: JointRef;
       segStart: [number, number, number];
       segVec: [number, number, number];
       segDir: [number, number, number];
@@ -207,11 +207,11 @@ export function generateChainMarks(
     }
     const segments: SegmentGeo[] = [];
     for (let segIndex = 0; segIndex < chain.jointPath.length - 1; segIndex++) {
-      const parentIndex = chain.jointPath[segIndex];
-      const childIndex = chain.jointPath[segIndex + 1];
+      const parentRef = chain.jointPath[segIndex];
+      const childRef = chain.jointPath[segIndex + 1];
 
-      const segStart = jointWorldPosition(cache, dancerIndex, frame, parentIndex);
-      const segEnd = jointWorldPosition(cache, dancerIndex, frame, childIndex);
+      const segStart = resolveJointPosition(cache, dancerIndex, frame, parentRef);
+      const segEnd = resolveJointPosition(cache, dancerIndex, frame, childRef);
       const segVec: [number, number, number] = [segEnd[0] - segStart[0], segEnd[1] - segStart[1], segEnd[2] - segStart[2]];
       const segLen = Math.hypot(segVec[0], segVec[1], segVec[2]);
       // Rig stub joints (zero-offset rotation pivots, e.g. BVH's "Neck"/"LHipJoint") have no
@@ -255,7 +255,7 @@ export function generateChainMarks(
       // miss there is a visible gap at the joint.
       const numSteps = Math.max(2, Math.round(segLen / stepSpacing));
 
-      segments.push({ segIndex, parentIndex, childIndex, segStart, segVec, segDir, perp, width0, width1, numLanes, numSteps });
+      segments.push({ segIndex, parentRef, childRef, segStart, segVec, segDir, perp, width0, width1, numLanes, numSteps });
     }
 
     const maxLanes = segments.reduce((m, s) => Math.max(m, s.numLanes), 1);
@@ -282,7 +282,7 @@ export function generateChainMarks(
         // that's only wide enough for 1) — skip placing marks here, but leave paintLoad/wobble
         // untouched so they pick back up unchanged at the next segment that does need this lane.
         if (lane >= seg.numLanes) continue;
-        const { segIndex, parentIndex, childIndex, segStart, segVec, segDir, perp, width0, width1, numLanes, numSteps } = seg;
+        const { segIndex, parentRef, childRef, segStart, segVec, segDir, perp, width0, width1, numLanes, numSteps } = seg;
         const laneT = numLanes === 1 ? 0.5 : (lane + 0.5) / numLanes;
         if (passPos === null) {
           passPos = [
@@ -327,7 +327,7 @@ export function generateChainMarks(
           // Sampled early (before the wobble update below) so motionIntensity can drive how
           // much this step wobbles in the first place — see the module doc comment on the
           // Round 17 "lower motion = smoother, higher motion = shakier" framing.
-          const { velocity } = sampleBoneAtT(cache, parentIndex, childIndex, dancerIndex, frame, t);
+          const { velocity } = sampleBoneAtT(cache, parentRef, childRef, dancerIndex, frame, t);
           const speed = Math.hypot(velocity[0], velocity[1], velocity[2]);
           const forceBlend = Math.min(speed * style.motionForceScale, style.maxMotionForce);
           // 0 at rest, 1 when motion has fully saturated its own cap — a single, reusable

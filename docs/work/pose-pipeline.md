@@ -1322,3 +1322,78 @@ no round-trip format change). `docs/credits.md` updated to name the third confir
 describe the current label scheme accurately. Verified live: the panel shows "dance" with
 "Salsa 1" selected by default and all 15 "Salsa N" options present in order. `npx tsc --noEmit`
 clean, no console errors.
+
+### Round 26: the head stopped being a special case — it's a chain now, like everything else
+
+User's framing, on a fresh annotated screenshot after Round 24's margin fix: "The heads look
+good... but a bit too uniform... 'square with cut corners'... doesn't quite read ovular... I
+think the gaps in the neck and torso and hips are caused by something similar." Asked to review
+everything special-cased for the head and collapse as much as possible into how the rest of the
+figure is drawn, rather than continuing to hand-tune a parallel implementation.
+
+**Diagnosis, laid out for the user before writing any code:** `generateChainMarks`' lane model
+carries a real assumption — taper is modest within one segment, and big width changes happen in
+discrete jumps at real joint boundaries (a fresh `numLanes` gets recomputed at every new bone).
+That's true for every limb. The head's own oval asked ONE region to taper from full width down
+to a point at BOTH ends, a far more extreme taper than any limb bone experiences — and the old
+`generateHeadMarks` used one constant `laneWidthRendered` for the whole oval regardless of
+position, unlike `generateChainMarks`' `localWidth`, which is recomputed every step from `t`.
+That's the mechanical cause of "square with cut corners": Round 24's margin bump (needed to close
+the gaps) made every lane render close to full width everywhere, including near the crown, where
+a true ellipse should already have tapered to almost nothing.
+
+**The fix wasn't a new taper formula for the head — it was giving the head a REAL chain to taper
+along, the same mechanism limbs already have.** `pose/head.ts`'s entire bespoke per-step
+brush-pass loop (`generateHeadMarks`, ~220 lines: paint load, wobble, motion blend, heading
+clamp, dry-brush depletion, all duplicated from `generateChainMarks` and already drifted in three
+places per Round 24) is gone. In its place, `buildHeadCrownChain` builds a `Chain` — a handful of
+synthetic joints continuing straight past the real head joint, in the same direction the
+neck->head bone already points, out to where the crown should be, each carrying a thickness
+sampled from the ellipse's own width profile at that point. That `Chain` goes through the exact
+same `generateChainMarks` every limb does. One rendering implementation for the whole figure, not
+two drifting copies.
+
+**What made this possible: generalizing what a chain's joints can be.** `Chain.jointPath` and
+`sampleBoneAtT` used to take raw rig joint indices — no way to express "a point that isn't a real
+rig joint." Added `JointRef` (pose-cache.ts): a real joint (unchanged, resolved via
+`jointWorldPosition` exactly as before — real-index behaviour is byte-identical to pre-rewrite,
+confirmed by `npx tsc --noEmit` passing everywhere else untouched) or an `extrapolated` point
+(anchor + direction-of-travel + distance, re-derived fresh every frame from two real joints — so
+it moves and rotates rigidly with them, the same as a point further out on a real bone would).
+`generateChainMarks`, `sampleBoneAtT`, and `debug/overlay.ts` now resolve through
+`resolveJointPosition` instead of indexing the cache directly; every existing chain (every limb)
+still only ever holds real refs, so none of this changes anything about how a limb renders.
+
+**A genuine, deliberate simplification along the way:** the old oval derived its across-head axis
+from the shoulder line (`facing`/`side`), specifically so the head would foreshorten correctly
+when the dancer's body turned away from the fixed camera. The new crown chain uses
+`generateChainMarks`' own `segDir x viewForward` — the same axis every limb uses — losing that
+shoulder-relative foreshortening in exchange for one shared code path. Since the camera is fixed
+and this dance is mostly performed facing it, this reads similarly in practice; flagged in
+`buildHeadCrownChain`'s own doc comment as worth revisiting if a turned-away pose ever looks
+wrong, not silently dropped.
+
+**Also gone, and not replaced:** Round 23's `attachFalloff` (an artificial spatial falloff
+softening motion response toward the crown). The crown's motion now comes from real per-point
+sampled velocity on a rigid extension of the head joint — which naturally varies along the
+chain's length on its own, satisfying the original "not a constant force" ask through a more
+physically real mechanism than a hand-tuned decay curve, rather than needing a separate one.
+
+The "show heads" toggle still works via two `generateChainMarks` calls per dancer (the static
+limb chains, truncated at the head joint as before; then the crown chain, built fresh every
+frame since its size depends on shoulder width, a per-frame quantity) sharing one `style` object
+— `showHeads` gates only whether the second call's output reaches `allStrokes`, same contract as
+before, now verified against the new code path.
+
+Verified: reproduced the user's own frame 155 (both dancers, duress on) exactly — both heads read
+as solid, round, filled shapes with real brush-lane texture, no gaps, no squared silhouette.
+Spot-checked frame 0 (calm) and frame 300 (duress on, near-peak motion) too: round and filled at
+rest, frays organically at the silhouette under motion without losing its round core. Toggled
+"show heads" and "debug overlay" live — both still work against the new code path, no console
+errors anywhere in the sweep. `npx tsc --noEmit` clean.
+
+**Left open, per the user's own framing:** whether the SAME lane-margin fragility (few lanes,
+thin margin, gaps under dry-brush/motion thinning) shows up in real limb segments with low lane
+counts — the yellow-marked torso/hip gaps in the user's screenshot. Not investigated this round;
+the fix above addresses the head specifically. Worth a dedicated look now that there's exactly
+one lane-margin formula in the codebase to check, rather than two.

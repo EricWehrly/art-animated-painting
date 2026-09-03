@@ -35,10 +35,11 @@ export interface ToyParams {
    * and arrows for each dab's raw sampled velocity (direction + relative strength). See
    * debug/overlay.ts. */
   debugMode: boolean;
-  /** true (default) = heads are rendered. false = heads are hidden from the canvas, but
-   * generateHeadMarks still runs every frame (see main.ts's renderFrame) rather than being
-   * skipped outright — the toggle only gates what reaches the visible mesh, not whether the
-   * head is painted at all, matching the rest of the figure's own compute-vs-display split. */
+  /** true (default) = heads are rendered. false = heads are hidden from the canvas, but the
+   * crown chain (pose/head.ts's buildHeadCrownChain, see main.ts's renderFrame) still gets
+   * built and painted every frame rather than being skipped outright — the toggle only gates
+   * what reaches the visible mesh, not whether the head is painted at all, matching the rest
+   * of the figure's own compute-vs-display split. */
   showHeads: boolean;
   /** -1 = both dancers (default). 0/1 = render only that dancer — removes the other from the
    * canvas entirely so a single body can be read without the two figures overlapping. */

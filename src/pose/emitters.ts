@@ -1,5 +1,5 @@
-import type { PoseCache } from "./pose-cache";
-import { jointWorldPosition } from "./pose-cache";
+import type { PoseCache, JointRef } from "./pose-cache";
+import { resolveJointPosition } from "./pose-cache";
 
 export interface Emitter {
   position: [number, number, number];
@@ -18,8 +18,14 @@ export interface Emitter {
  * bones have tiny per-frame deltas, and finite-difference noise on those was showing up as
  * incoherent stroke orientation).
  *
- * Takes raw joint indices so the same helper works for any segment of a chain (see
- * pose/strokes.ts generateChainMarks), not just one bone in isolation.
+ * Takes `JointRef`s (real rig joints OR extrapolated points with no rig joint of their own —
+ * see pose-cache.ts) rather than raw indices, so the same helper works for any segment of any
+ * chain (see pose/strokes.ts generateChainMarks) — including pose/head.ts's crown segments,
+ * which have no real joint to sample. An extrapolated ref re-derives its own position at
+ * frame-1/frame+1 the same as frame itself (see resolveJointPosition), so its velocity here
+ * comes out physically real — a crown point genuinely moves faster than the neck under a head
+ * turn, the same way a point further out on a rotating rigid body would — not copied from
+ * whatever real joint it's anchored to.
  *
  * Deliberately a per-point query, not "the bone's velocity" — a rotating limb's tip and base
  * move differently, and averaging them into one value per bone was tried and rejected (see
@@ -28,30 +34,30 @@ export interface Emitter {
  */
 export function sampleBoneAtT(
   cache: PoseCache,
-  parentIndex: number,
-  childIndex: number,
+  parentRef: JointRef,
+  childRef: JointRef,
   dancerIndex: number,
   frame: number,
   t: number
 ): { position: [number, number, number]; velocity: [number, number, number] } {
-  const parentNow = jointWorldPosition(cache, dancerIndex, frame, parentIndex);
-  const childNow = jointWorldPosition(cache, dancerIndex, frame, childIndex);
+  const parentNow = resolveJointPosition(cache, dancerIndex, frame, parentRef);
+  const childNow = resolveJointPosition(cache, dancerIndex, frame, childRef);
   const position: [number, number, number] = [
     parentNow[0] + (childNow[0] - parentNow[0]) * t,
     parentNow[1] + (childNow[1] - parentNow[1]) * t,
     parentNow[2] + (childNow[2] - parentNow[2]) * t,
   ];
 
-  const parentPrev = jointWorldPosition(cache, dancerIndex, frame - 1, parentIndex);
-  const childPrev = jointWorldPosition(cache, dancerIndex, frame - 1, childIndex);
+  const parentPrev = resolveJointPosition(cache, dancerIndex, frame - 1, parentRef);
+  const childPrev = resolveJointPosition(cache, dancerIndex, frame - 1, childRef);
   const prevPosition: [number, number, number] = [
     parentPrev[0] + (childPrev[0] - parentPrev[0]) * t,
     parentPrev[1] + (childPrev[1] - parentPrev[1]) * t,
     parentPrev[2] + (childPrev[2] - parentPrev[2]) * t,
   ];
 
-  const parentNext = jointWorldPosition(cache, dancerIndex, frame + 1, parentIndex);
-  const childNext = jointWorldPosition(cache, dancerIndex, frame + 1, childIndex);
+  const parentNext = resolveJointPosition(cache, dancerIndex, frame + 1, parentRef);
+  const childNext = resolveJointPosition(cache, dancerIndex, frame + 1, childRef);
   const nextPosition: [number, number, number] = [
     parentNext[0] + (childNext[0] - parentNext[0]) * t,
     parentNext[1] + (childNext[1] - parentNext[1]) * t,
