@@ -10,11 +10,15 @@ The two dancers are performed by real motion-capture data: subjects **60** and *
 [CMU Graphics Lab Motion Capture Database](http://mocap.cs.cmu.edu/), each captured performing
 15 numbered salsa trials (`60_01`-`60_15`, `61_01`-`61_15`). All 15 pairs are baked into this
 toy and selectable from the "dance" picker in the params panel, labeled plainly "Salsa 1"
-through "Salsa 15" rather than named routines.
+through "Salsa 15" for 12 of the 15 - three (6, 9, 13) carry an appended figure name
+(Hammerlock, Enchufla) identified by separately analyzing the baked motion against real salsa
+figure vocabulary, not sourced from CMU. See [dance-naming](work/dance-naming.md) for that
+methodology and its honest confidence caveats.
 
 CMU's own database lists both subjects simply as "salsa (15 trials)", and every single trial's
 motion description reads identically "salsa dance" - there is no per-trial name or description
-to draw on. Checked three independent sources looking for one anyway: CMU's own site
+in CMU's own metadata to draw on. Checked three independent sources looking for one anyway:
+CMU's own site
 (`search.php`), Bruce Hahne's (cgspeed) original index, and the una-dinosauria/cmu-mocap
 mirror's own index text - all three list every one of these 30 trials with that same identical
 generic description, no per-trial figure/pattern name anywhere. For comparison, CMU does

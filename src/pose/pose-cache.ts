@@ -60,14 +60,22 @@ export async function loadPoseCache(baseUrl = "/data", pairId?: string): Promise
  * pairs were verified as valid (matching rigs, matching frame counts, plausible partner
  * distance) and baked — see docs/roadmap.md.
  *
- * Labels are plain "Salsa N", not real per-dance names: checked CMU's own site, Bruce Hahne's
- * (cgspeed) index, and the una-dinosauria/cmu-mocap mirror's own index text — all three
- * independently list every one of these 30 trials (60_01-15, 61_01-15) with the identical
- * generic description "salsa dance," no per-trial figure/pattern name anywhere. See
- * docs/credits.md. */
+ * Labels are plain "Salsa N" — CMU's own site, Bruce Hahne's (cgspeed) index, and the
+ * una-dinosauria/cmu-mocap mirror's own index text all independently list every one of these 30
+ * trials (60_01-15, 61_01-15) with the identical generic description "salsa dance," no
+ * per-trial figure/pattern name in any of their metadata. Three exceptions below carry an
+ * appended figure name: not sourced from CMU's metadata (which has none), but identified by
+ * separately analyzing the baked motion itself against real salsa figure vocabulary and a
+ * reference annotated dataset (CoMPAS3D) — best-effort pattern matches, not certainties. See
+ * docs/work/dance-naming.md for the full methodology and honest confidence caveats. */
+const FIGURE_LABELS: Record<string, string> = {
+  "06": "Salsa 6 — Hammerlock",
+  "09": "Salsa 9 — Enchufla",
+  "13": "Salsa 13 — Hammerlock",
+};
 export const AVAILABLE_TRIAL_PAIRS: { id: string; label: string }[] = Array.from({ length: 15 }, (_, i) => {
   const id = String(i + 1).padStart(2, "0");
-  return { id, label: `Salsa ${i + 1}` };
+  return { id, label: FIGURE_LABELS[id] ?? `Salsa ${i + 1}` };
 });
 
 /**

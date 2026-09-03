@@ -132,23 +132,64 @@ Two results directly useful, one important caveat:
    since our clips carry no audio to derive it from directly (foot-strike periodicity could
    proxy for it, untried).
 
-## Status
+## Method, round 4: verify against real motion, not just real timing
 
-Salsa 6 (Hammerlock, 91%) and Salsa 13 (Hammerlock, 89%) and Salsa 9 (Enchufla, 85%) are the three
-live candidates, now backed by both a verified real kinematic signature (hand-traced rotation
-curves, not just a heuristic score) and a real-world frequency prior confirming these are
-meaningfully uncommon, nameable figures rather than generic connective tissue. The other 11 of 15
-dances show only the universal Cross Body Lead / Basic Step / Right Turn signal, which is real but
-not usable as a distinguishing name — no further reference-pulling is expected to help those
-specifically, since the gap there is "no distinctive event detected," not "detected event needs
-better calibration." A different signal family (footwork/weight-transfer, styling, shines —
-currently undetected since all analysis so far is hip-rotation/position only) is the more likely
-route to finding anything for them, if pursued at all.
+Pulled the actual labeled motion for a handful of real Hammerlock and Enchufla instances — 4
+`.npz` SMPL-X files (leader+follower, two takes: `Pair2_song3_take1` for Hammerlock,
+`Pair4_song1_take1` for Enchufla), ~45MB total, not the 28GB dataset. SMPL-X's `poses[:, 0:3]`
+(`global_orient`, axis-angle) is exactly the pelvis-heading signal our BVH-side analysis has been
+computing all along, so no forward kinematics or the actual SMPL-X body model (which needs a
+license login we don't have) was needed — just the raw pose parameters already in the file, same
+30fps as our CMU bake.
 
-Not yet done, pending user direction: pulling the small number of actual `.npz` motion segments
-labeled Hammerlock/Enchufla in CoMPAS3D (a handful of ~11MB files, not the full dataset) to
-confirm our detected rotation *magnitude and shape* against a real labeled example, rather than
-timing/frequency alone — the last real gap between "heuristically confident" and "verified."
+**What the real examples showed, hand-traced the same way as the CMU candidates:**
+
+- **Real Hammerlock instances rotate much further than ours** (net 420–600°, swing 520–680° per
+  annotated phrase) — bigger than Salsa 6 (net 167°, swing 411°) or Salsa 13 (net 120°/−142°,
+  swing 354°/276° across its two episodes). Digging into *why*: every real annotated Hammerlock
+  segment is a compound phrase — "XBL...ends with Left HL" — bundling a full cross-body turn
+  *and* the wind into one 8-count unit, with the actual unwind spilling into the *next* annotated
+  phrase. Our episode detector has no concept of musical phrase boundaries (CMU's clips carry no
+  audio), so it can't be expected to bundle or split the same way.
+- **Real Enchufla instances**: follower swing 222–297°, leader stays comparatively still (swing
+  58–124°) — smaller than Salsa 9's follower swing of 430–480°. Same phrase-bundling ambiguity
+  likely applies.
+- **What the shapes DO confirm**: every real example — Hammerlock and Enchufla alike — is a
+  smooth, large, single-direction-then-partial-reversal rotation, not a jittery or compound-noise
+  signal. That's the same qualitative shape hand-verified in Salsa 6, 9, and 13's own traces back
+  in round 2. The magnitude mismatch is best explained by phrase-boundary bundling we have no way
+  to replicate (no count grid to align to), not by the CMU episodes being a different kind of
+  event entirely.
+
+**Honest conclusion: magnitude-based figure discrimination doesn't fully hold up, but the family
+match does.** Real Hammerlock and Enchufla both live in the same "big smooth partner turn,
+possibly with a reversal" family our detector was built to find, and pin down real, uncommon
+(4–5% base rate) figures rather than filler — but distinguishing *which specific one* from
+rotation magnitude alone, without a count-grid to bound the phrase the way the reference
+annotations are bounded, isn't reliable enough to defend as certain.
+
+## Status — final call
+
+Per explicit direction (one answer per dance, not indefinite hedging): naming the three
+strongest, hand-verified candidates as best-effort matches, honestly caveated rather than
+presented as certain —
+
+- **Salsa 6 — Hammerlock**
+- **Salsa 9 — Enchufla**
+- **Salsa 13 — Hammerlock**
+
+All three show a genuine, verified (not noise, not heuristic-only) large partner-turn event with
+real reversal/exchange character, in a family confirmed real and uncommon by an actual annotated
+corpus — the honest limit is *which specific figure in that family*, not *whether something
+distinctive is there at all*. Shipped as `AVAILABLE_TRIAL_PAIRS`' three exceptions in
+`pose-cache.ts` (`"Salsa 6 — Hammerlock"` etc.), the other 12 stay plain `"Salsa N"`.
+
+The other 12 of 15 dances show only the universal Cross Body Lead / Basic Step / Right Turn
+signal, which is real but not usable as a distinguishing name — no further reference-pulling is
+expected to help those specifically, since the gap there is "no distinctive event detected," not
+"detected event needs better calibration." A different signal family (footwork/weight-transfer,
+styling, shines — currently undetected since all analysis so far is hip-rotation/position only)
+is the more likely route to finding anything for them, if ever pursued.
 
 ## Sources
 
