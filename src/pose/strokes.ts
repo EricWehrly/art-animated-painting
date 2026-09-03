@@ -204,6 +204,9 @@ export function generateChainMarks(
       width1: number;
       numLanes: number;
       numSteps: number;
+      /** How much more generous this segment's lane-overlap margin, dry-brush width floor, and
+       * motion-thinning limit are than the baseline — see the comment where this is computed. */
+      fewLanesFactor: number;
     }
     const segments: SegmentGeo[] = [];
     for (let segIndex = 0; segIndex < chain.jointPath.length - 1; segIndex++) {
@@ -239,6 +242,21 @@ export function generateChainMarks(
       // instead of resetting.
       const numLanes = Math.max(1, Math.round(((width0 + width1) / 2) / style.markWidth));
 
+      // A segment with many lanes tolerates the baseline 1.6x overlap margin fine — if any one
+      // lane thins out under dry brush or motion, it's a small fraction of the segment's total
+      // width, and a neighbour is statistically likely to still be near full width at any given
+      // point. A segment with only 1-2 lanes has no such safety in numbers: the exact same
+      // proportional thinning removes a much bigger share of the visible coverage, or (at
+      // numLanes=1) has no neighbour to rely on at all. This is exactly the bug pose/head.ts's
+      // Round 24 found and fixed for the head specifically (parity with limbs' own 1.6x margin
+      // wasn't enough at its ~4-6 lanes) — the user's follow-up flagged that real limb segments
+      // with few lanes (a waist/torso connector, thin joints) likely have the identical
+      // fragility, just never diagnosed. 1 at numLanes<=1, fading to 0 by numLanes=6 (segments
+      // at or above that lane count are untouched — this only widens the margin where the old
+      // fixed 1.6x margin was actually thin relative to how few lanes are sharing the load).
+      // See docs/work/pose-pipeline.md Round 27.
+      const fewLanesFactor = Math.max(0, Math.min(1, (6 - numLanes) / 5));
+
       // Anchor DENSITY (how many steps a lane gets) is a coverage requirement — "the entire
       // stick figure area should be filled in" — and must hold regardless of how long any
       // individual stroke ends up being; stroke length is a separate, secondary rendering
@@ -255,7 +273,7 @@ export function generateChainMarks(
       // miss there is a visible gap at the joint.
       const numSteps = Math.max(2, Math.round(segLen / stepSpacing));
 
-      segments.push({ segIndex, parentRef, childRef, segStart, segVec, segDir, perp, width0, width1, numLanes, numSteps });
+      segments.push({ segIndex, parentRef, childRef, segStart, segVec, segDir, perp, width0, width1, numLanes, numSteps, fewLanesFactor });
     }
 
     const maxLanes = segments.reduce((m, s) => Math.max(m, s.numLanes), 1);
@@ -282,7 +300,7 @@ export function generateChainMarks(
         // that's only wide enough for 1) — skip placing marks here, but leave paintLoad/wobble
         // untouched so they pick back up unchanged at the next segment that does need this lane.
         if (lane >= seg.numLanes) continue;
-        const { segIndex, parentRef, childRef, segStart, segVec, segDir, perp, width0, width1, numLanes, numSteps } = seg;
+        const { segIndex, parentRef, childRef, segStart, segVec, segDir, perp, width0, width1, numLanes, numSteps, fewLanesFactor } = seg;
         const laneT = numLanes === 1 ? 0.5 : (lane + 0.5) / numLanes;
         if (passPos === null) {
           passPos = [
@@ -321,8 +339,11 @@ export function generateChainMarks(
           ];
           // Lanes evenly divide localWidth exactly, so widen each lane's own rendered width a
           // bit beyond that even division — otherwise adjacent lanes' soft (tear/taper) edges
-          // leave a visible gap instead of overlapping like real brush passes do.
-          const laneWidthRendered = (localWidth / numLanes) * 1.6;
+          // leave a visible gap instead of overlapping like real brush passes do. The margin
+          // itself grows on a low-lane segment (fewLanesFactor, see above) — 1.6x at 6+ lanes,
+          // up to 3.0x at 1 lane (pushed past the crown chain's own 2.6x — a real limb segment
+          // still showed a residual gap at that level, see docs/work/pose-pipeline.md Round 27).
+          const laneWidthRendered = (localWidth / numLanes) * (1.6 + fewLanesFactor * 1.4);
 
           // Sampled early (before the wobble update below) so motionIntensity can drive how
           // much this step wobbles in the first place — see the module doc comment on the
@@ -470,7 +491,12 @@ export function generateChainMarks(
           // richly it paints; the load is then spent (faster for a longer/motion-stretched
           // step) and, once dry, reloads for the step after this one.
           const loadFrac = Math.max(0, Math.min(1, paintLoad));
-          const dryWidthMul = style.dryWidthFactor + (1 - style.dryWidthFactor) * loadFrac;
+          // How thin a fully-dry lane is allowed to render also relaxes on a low-lane segment —
+          // a dry lane with no neighbour to lean on (or only one) needs a higher floor than a
+          // dry lane on a many-lane segment, where neighbours cover the gap statistically. See
+          // laneWidthRendered's margin above for the same reasoning.
+          const effectiveDryWidthFactor = style.dryWidthFactor + (0.7 - style.dryWidthFactor) * fewLanesFactor;
+          const dryWidthMul = effectiveDryWidthFactor + (1 - effectiveDryWidthFactor) * loadFrac;
           const dryVolumeMul = style.dryVolumeFactor + (1 - style.dryVolumeFactor) * loadFrac;
           // Pressure unevenness itself grows with motion too — "well-distributed" at rest,
           // "more uneven" under motion, not a fixed wobble regardless of speed. Floor raised
@@ -483,8 +509,12 @@ export function generateChainMarks(
           // Motion makes a stroke QUICKER and SHALLOWER, not bolder — a fast, grazing pass
           // doesn't have time to lay down as much paint as a slow, deliberate one. Inverted
           // from Round 15/16, which boosted width/volume with force; that read as the opposite
-          // of "shallower, more uneven, dynamic" once actually compared side by side.
-          const width = laneWidthRendered * dryWidthMul * pressureNoise * (1 - motionIntensity * 0.35);
+          // of "shallower, more uneven, dynamic" once actually compared side by side. The
+          // shrink itself is capped lower on a low-lane segment (0.35 -> 0.15, same reasoning
+          // as the margin/dry-width floor above) — a thin limb segment can't afford to lose as
+          // much width to motion as a wide one with lanes to spare.
+          const motionWidthShrink = 0.35 - fewLanesFactor * 0.2;
+          const width = laneWidthRendered * dryWidthMul * pressureNoise * (1 - motionIntensity * motionWidthShrink);
           const volume = Math.max(0.05, 0.2 - motionIntensity * style.volumeScale * 0.4) * dryVolumeMul * pressureNoise;
 
           if (debugOut) {
@@ -529,13 +559,118 @@ export function generateChainMarks(
 
           const consumed = renderLength / style.paintCapacity;
           paintLoad -= consumed;
-          if (paintLoad <= style.dryMinLoad) {
+          // Reloads sooner (a higher threshold) on a low-lane segment, same reasoning as the
+          // margin/dry-width floor above — a many-lane segment can afford to ride a lane
+          // further into "dry" before its thinness is visible next to full-width neighbours; a
+          // 1-2 lane segment can't, so it gets a fresh load back sooner.
+          const effectiveDryMinLoad = style.dryMinLoad + (0.35 - style.dryMinLoad) * fewLanesFactor;
+          if (paintLoad <= effectiveDryMinLoad) {
             paintLoad = 0.85 + hash(stepId + 1.03) * 0.15;
           }
         }
       }
     }
   });
+
+  return strokes;
+}
+
+/**
+ * Fills the wedge of negative space at a BRANCH joint — where 2+ chains start from the same
+ * point (the hips, where the torso and both legs all originate; the sternum, where the neck and
+ * both arms do) — that neither chain's own lane fan ever reaches. Each chain paints outward
+ * along its OWN bone's direction from the shared joint; the angular gap BETWEEN two chains'
+ * different directions is still part of the figure's own silhouette (the crotch, the armpit-ish
+ * junction at the sternum), not background, but nothing in generateChainMarks paints it — every
+ * mark it places is anchored to a specific bone's own local width/direction. First diagnosed
+ * from the user's "hips" gap screenshot (a visible hole between the two legs, right below where
+ * they and the torso all meet) — confirmed structural with the debug overlay's outline, not the
+ * lane-margin fragility Round 27's other fix addresses. See docs/work/pose-pipeline.md Round 27.
+ *
+ * Deliberately its own small pass rather than a change to generateChainMarks' own lane model —
+ * a branch point isn't a lane-coverage problem (more/wider lanes on either chain wouldn't reach
+ * across into the OTHER chain's own angular territory), it's a genuinely different situation:
+ * two-plus directions meeting at one point with nothing between them.
+ */
+export function generateBranchFillMarks(cache: PoseCache, chains: Chain[], dancerIndex: number, frame: number, style: BoneStrokeStyle): Stroke[] {
+  interface Spoke {
+    dir: [number, number, number];
+    width: number;
+  }
+  const spokesByJoint = new Map<number, Spoke[]>();
+  for (const chain of chains) {
+    if (chain.jointPath.length < 2) continue;
+    const startRef = chain.jointPath[0];
+    // Only real rig joints can be branch points — an extrapolated ref (pose/head.ts's crown)
+    // never has more than one chain touching it.
+    if (startRef.kind !== "real") continue;
+    const startPos = resolveJointPosition(cache, dancerIndex, frame, startRef);
+    // Walk past any leading zero-offset stub joints (e.g. this rig's "LHipJoint"/"RHipJoint"/
+    // "LowerBack" — rotation pivots that sit exactly at the hips, same pattern as the
+    // "LeftShoulder"/"RightShoulder" stubs found in pose/head.ts's own history) to find this
+    // chain's first REAL direction and thickness. Using jointPath[1] unconditionally found a
+    // zero-length vector for every one of the three chains meeting at the hips — none of them
+    // contributed a spoke, so the branch point wasn't even recognized as one. See
+    // docs/work/pose-pipeline.md Round 27.
+    let nextIndex = 1;
+    let nextPos = resolveJointPosition(cache, dancerIndex, frame, chain.jointPath[nextIndex]);
+    while (nextIndex < chain.jointPath.length - 1 && Math.hypot(nextPos[0] - startPos[0], nextPos[1] - startPos[1], nextPos[2] - startPos[2]) < 0.05) {
+      nextIndex++;
+      nextPos = resolveJointPosition(cache, dancerIndex, frame, chain.jointPath[nextIndex]);
+    }
+    const vec: [number, number, number] = [nextPos[0] - startPos[0], nextPos[1] - startPos[1], nextPos[2] - startPos[2]];
+    const len = Math.hypot(vec[0], vec[1], vec[2]);
+    if (len < 0.05) continue;
+    const list = spokesByJoint.get(startRef.index) ?? [];
+    list.push({ dir: normalize(vec), width: chain.thickness[nextIndex - 1] * style.widthScale });
+    spokesByJoint.set(startRef.index, list);
+  }
+
+  const strokes: Stroke[] = [];
+  for (const [jointIndex, spokes] of spokesByJoint) {
+    if (spokes.length < 2) continue; // not a branch point — generateChainMarks' own coverage already meets here
+    const jointPos = resolveJointPosition(cache, dancerIndex, frame, { kind: "real", index: jointIndex });
+
+    for (let i = 0; i < spokes.length; i++) {
+      for (let j = i + 1; j < spokes.length; j++) {
+        const a = spokes[i];
+        const b = spokes[j];
+        const cosAngle = Math.max(-1, Math.min(1, a.dir[0] * b.dir[0] + a.dir[1] * b.dir[1] + a.dir[2] * b.dir[2]));
+        const angle = Math.acos(cosAngle);
+        // A narrow angle between two bones (close to running parallel) already gets covered by
+        // their own ordinary lane overlap near the joint — only a wide-enough wedge (roughly
+        // 29 degrees or more) needs deliberate filling.
+        if (angle < 0.5) continue;
+
+        const width = (a.width + b.width) / 2;
+        const fillCount = Math.max(2, Math.round(angle / 0.4));
+        for (let k = 0; k < fillCount; k++) {
+          const seed = jointIndex * 911 + i * 131 + j * 37 + k * 7;
+          // Stays away from mix=0/1 (the spokes' own exact directions) — that's already
+          // generateChainMarks' own territory; this only needs to cover the space between.
+          const mix = 0.15 + hash(seed) * 0.7;
+          const blended: [number, number, number] = [
+            a.dir[0] * (1 - mix) + b.dir[0] * mix,
+            a.dir[1] * (1 - mix) + b.dir[1] * mix,
+            a.dir[2] * (1 - mix) + b.dir[2] * mix,
+          ];
+          const dir = normalize(blended);
+          const markWidth = width * (0.8 + hash(seed + 0.3) * 0.4);
+          const markLength = markWidth * 1.6;
+          const dist = markLength * 0.5 + hash(seed + 0.6) * markWidth * 0.5;
+          strokes.push({
+            position: [jointPos[0] + dir[0] * dist, jointPos[1] + dir[1] * dist, jointPos[2] + dir[2] * dist],
+            velocity: dir,
+            length: markLength,
+            width: markWidth,
+            volume: 0.12 + hash(seed + 0.9) * 0.08,
+            color: style.color,
+            seed: seed * 0.6180339887,
+          });
+        }
+      }
+    }
+  }
 
   return strokes;
 }

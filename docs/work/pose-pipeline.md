@@ -1397,3 +1397,57 @@ thin margin, gaps under dry-brush/motion thinning) shows up in real limb segment
 counts — the yellow-marked torso/hip gaps in the user's screenshot. Not investigated this round;
 the fix above addresses the head specifically. Worth a dedicated look now that there's exactly
 one lane-margin formula in the codebase to check, rather than two.
+
+### Round 27: the torso/hip gaps were two different bugs, not one
+
+User's ask: proceed with the left-open item above — go find out whether the real limb chains
+have the same lane-margin fragility Round 26 fixed for the head.
+
+**Bug 1: the SAME fragility, confirmed, now shared instead of head-only.** Computed
+`generateChainMarks`' own `numLanes` for the hip/waist/torso segments directly (e.g. the
+`LHipJoint -> LeftUpLeg` and `LowerBack -> Spine` segments both round to 2 lanes at default
+scale) — exactly the "few fat lanes, thin margin" situation Round 26 diagnosed for the head, just
+never checked for real limb segments. Rather than duplicate Round 26's fix as a second hardcoded
+constant, generalized it: each segment now carries a `fewLanesFactor` (1 at numLanes<=1, fading
+to 0 by numLanes>=6) that scales the lane-overlap margin, the dry-brush width floor, the
+motion-driven width shrink, AND (added this round, needed to fully close a residual gap even at
+rest — see below) how soon a depleted lane reloads. A segment with 6+ lanes is untouched (the
+existing values are what's shipped for the whole session); a 1-2 lane segment gets the same
+generous treatment the head's crown chain needed. One shared formula instead of two, per the
+whole point of Round 26's collapse.
+
+**Bug 2, found via the debug overlay: a genuinely different failure — branch points.** Zoomed
+into the hips with `debugMode` on and saw the actual chain outline: three chains (the torso and
+both legs) all start at the *same point*, each painting outward along its OWN bone's own
+direction. The wedge of angular space BETWEEN two chains' directions — the crotch, concretely —
+is still part of the figure's own silhouette, but nothing in `generateChainMarks` ever paints it;
+every mark it places is anchored to one specific bone. No amount of lane-margin tuning fixes
+this — wider lanes on either leg don't reach across into the OTHER leg's own angular territory.
+
+New `generateBranchFillMarks` (pose/strokes.ts) handles it directly: groups every chain by its
+own starting joint, and for any joint where 2+ chains meet at a wide-enough angle (~29 degrees
+or more — narrower gaps already get covered by ordinary lane overlap), scatters a handful of
+short filler marks blended between the adjacent chains' own directions, anchored at the shared
+joint. Wired into `main.ts`'s render loop right after the main `generateChainMarks` call, always
+on (not duress-gated — this is base coverage, the same as the wobble/loading that's already
+always-on).
+
+**A real bug inside that first attempt: this rig's zero-offset stub joints.** The branch-fill
+code initially computed each chain's own "spoke direction" from `jointPath[0]` to `jointPath[1]`
+— but `LHipJoint`, `RHipJoint`, and `LowerBack` (verified directly against the baked cache) all
+sit at the EXACT same world position as `Hips` itself, the same zero-offset-rotation-pivot
+pattern Round 21 already found on the shoulders. All three chains meeting at the hips produced a
+zero-length direction vector and got silently skipped — the branch point wasn't even recognized
+as one. Fixed by walking forward past any leading near-zero-length joints to find each chain's
+first REAL direction (and using that segment's own thickness, not the skipped stub's).
+
+**Verification was iterative, not one-shot** — a direct callback to Round 24's mistake of
+declaring victory from a single frame. First pass (branch-fill wired in, stub-joint bug not yet
+found) visibly shrank the crotch hole but didn't close it. Fixing the stub-joint walk closed most
+of it; a residual hole further down the thigh (calm, no motion — ruling out a motion-specific
+cause) needed the margin ceiling pushed further (1.6-3.0x, up from 1.6-2.6x) and the new
+reload-sooner-on-few-lanes fix before it fully closed. Final state confirmed with the debug
+overlay's own outline overlaid on the paint (not just eyeballing the silhouette) at the hips and
+at the shoulder/neck branch (where both arms and the neck diverge from the spine) — solid at
+both, calm and under duress motion, frames 0/155/300, both dancers. No console errors. `npx tsc
+--noEmit` clean.

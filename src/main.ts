@@ -10,6 +10,7 @@ import { buildChains } from "./pose/skeleton";
 import type { Emitter } from "./pose/emitters";
 import {
   generateChainMarks,
+  generateBranchFillMarks,
   generateSpeckles,
   type Stroke,
   type BoneStrokeStyle,
@@ -201,6 +202,11 @@ async function main() {
       const emitters: Emitter[] | undefined = params.duress && params.speckleAmount > 0 ? [] : undefined;
       const style = strokeStyleFor(dancerIndex);
       allStrokes.push(...generateChainMarks(cache, chains, dancerIndex, frame, style, viewForward, debugDabs, emitters));
+      // Fills the wedge of negative space at branch joints (hips, sternum) that no single
+      // chain's own lane fan reaches — see pose/strokes.ts's generateBranchFillMarks doc
+      // comment. Always on, not duress-gated: this is base coverage, the same as
+      // generateChainMarks' own always-on wobble/loading.
+      allStrokes.push(...generateBranchFillMarks(cache, chains, dancerIndex, frame, style));
       if (debugDabs) debugDancers.push({ dancerIndex, debugDabs });
       if (emitters) {
         allStrokes.push(...generateSpeckles(emitters, frame, speckleStyleFor(dancerIndex)));
