@@ -1451,3 +1451,54 @@ overlay's own outline overlaid on the paint (not just eyeballing the silhouette)
 at the shoulder/neck branch (where both arms and the neck diverge from the spine) — solid at
 both, calm and under duress motion, frames 0/155/300, both dancers. No console errors. `npx tsc
 --noEmit` clean.
+
+### Round 28: sized the head down, and diagnosed (not yet fixed) why it feels static
+
+User's follow-up, on the gap fixes: good, but the head is "a bit too uniform... these feel very
+samey frame to frame" compared to the old shoulder-relative oval, which — even though its
+"square with cut corners" shape was the real problem — apparently read as more alive because it
+visibly distorted as the dancer's body turned. Asked for the head sized down to roughly the
+smallest that still reads, and to look at the head through a whole dance for ideas on what to
+add back, rather than immediately re-implementing the old system.
+
+**Sizing**: `buildHeadCrownChain`'s `height`/`rx` multipliers cut from `0.62`/`0.22` of shoulder
+width to `0.48`/`0.17` — roughly a quarter smaller in both dimensions. Verified live: still reads
+clearly as a round head at the smaller size, better proportioned against the shoulders than
+before.
+
+**Diagnosis, done with data rather than eyeballing screenshots frame by frame**: sampled
+`shoulderWidth`, the shoulder-direction (body-rotation) angle, and head tilt-from-vertical every
+20th frame across the whole default trial. Three findings:
+
+1. `shoulderWidth` is **exactly** 7.88 at every single sample — a rigid bone length between two
+   real joints, never a source of per-frame variation in EITHER the old system or this one. Not
+   what's lost.
+2. Head tilt (`up`'s angle from vertical) varies genuinely but modestly — roughly 2 to 27 degrees
+   across the dance. This still drives the crown chain's own lean here (via `up`, unchanged from
+   Round 21 through today) — retained, not lost.
+3. The shoulder-direction (body-rotation) angle swings across nearly the full 360-degree range
+   over the course of the dance — a huge, dance-synced signal. This is exactly what the old
+   shoulder-relative `facing`/`side` axis (Round 21-24) used to orient the oval's own width, and
+   it's exactly what Round 25's `segDir x viewForward` simplification stopped using. This is the
+   confirmed, data-backed answer to "what are we not doing": the dominant source of old
+   frame-to-frame variety (the head's own on-screen shape changing as the dancer spins, per a
+   salsa's real body rotation) is real and currently unused, not a vague "it needs more spice."
+
+**Not yet implemented — this is what's up for discussion.** Options considered, from least to
+most invasive relative to Round 25's collapse into the shared chain model:
+
+- **(A) A foreshortening SCALE on the crown's own thickness values**, derived from how face-on
+  vs. edge-on the shoulder direction currently is relative to the camera (a single scalar
+  multiplier on `rx`/thickness, computed once in `buildHeadCrownChain` from data already sampled
+  there — no changes to `generateChainMarks`/`Chain` needed). Cheapest, reintroduces the visible
+  "narrows when the dancer turns" effect without reintroducing a custom lane-axis.
+- **(B) Amplify the already-retained tilt signal** — the crown could lean further than the
+  literal anatomical `up` angle, exaggerating head tilt/bob for a more dynamic read, independent
+  of (A).
+- **(C) Fully restore the old shoulder-relative lane axis** (a real `Chain.laneAxis` override
+  threaded through `generateChainMarks`) — the most faithful to Round 21-24's original design,
+  but reintroduces the architectural complexity Round 25 deliberately traded away.
+
+Leaning toward (A) as the primary fix (cheapest, targets the actual confirmed-dominant signal)
+with (B) as a plausible complementary addition, over (C) — but this is explicitly what the user
+asked to discuss before implementing, not a decision made here.

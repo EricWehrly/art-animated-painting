@@ -95,12 +95,18 @@ const CROWN_SEGMENTS = 6;
  *
  * Orientation note, a deliberate simplification versus Round 21-24: the lane (across-head) axis
  * now comes from `generateChainMarks`' own `segDir x viewForward` (same as every limb), not from
- * a shoulder-derived body-relative axis. Since the camera is fixed and this dance is mostly
- * performed facing it, this is very often visually similar — but it does mean the head's own
- * width no longer specifically foreshortens when the dancer's body (not just their head) turns
- * away from camera, which the old shoulder-relative "facing" axis was built to handle. Revisit
- * if a turned-away pose reads oddly; shoulderWidth is still sampled here (for sizing) even
- * though its old second job (orientation) is gone.
+ * a shoulder-derived body-relative axis. That axis's OLD second job — foreshortening the head's
+ * own width as the dancer's body (not just their head) turns relative to the fixed camera — is
+ * confirmed lost, not just theoretically: sampled `shoulderWidth`, the body-rotation angle
+ * (shoulder direction), and head tilt across the whole dance (every 20th frame) and found
+ * `shoulderWidth` is literally constant (7.88 at every sample — a rigid bone length, never a
+ * source of variation, old system or new), the shoulder-direction/body-rotation angle swings
+ * across nearly the FULL 360 degrees over the course of the dance, and head tilt varies only
+ * modestly (roughly 2-27 degrees) by comparison. Tilt still drives the crown's own lean here
+ * (via `up`) — that part carried over — but the big-swing body-rotation signal drove real,
+ * frame-to-frame-visible variety in the old shoulder-relative system and drives nothing here.
+ * See docs/work/pose-pipeline.md Round 28 for the "why does the head feel static now" thread
+ * this finding answers, and for what's being considered to reintroduce it.
  */
 export function buildHeadCrownChain(cache: PoseCache, headJoints: HeadJoints, dancerIndex: number, frame: number): Chain {
   const leftArm = jointWorldPosition(cache, dancerIndex, frame, headJoints.leftArmJoint);
@@ -115,8 +121,8 @@ export function buildHeadCrownChain(cache: PoseCache, headJoints: HeadJoints, da
   // multiplied by style.widthScale the same as any limb bone), it never moves a joint. The old
   // oval-disc code scaled the head's own reach by strokeWidthScale too, which was actually an
   // inconsistency this rewrite incidentally fixes rather than a behaviour worth preserving.
-  const height = shoulderWidth * 0.62;
-  const rx = shoulderWidth * 0.22;
+  const height = shoulderWidth * 0.48;
+  const rx = shoulderWidth * 0.17;
 
   const jointPath: JointRef[] = [realJoint(headJoints.headJoint)];
   const thickness: number[] = [];
