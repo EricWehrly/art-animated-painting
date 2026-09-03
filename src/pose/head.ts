@@ -68,6 +68,19 @@ function ellipseHalfWidthAt(u: number, r: number): number {
   return r * Math.sqrt(Math.max(0, 1 - y * y));
 }
 
+function normalize(v: [number, number, number]): [number, number, number] {
+  const len = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / len, v[1] / len, v[2] / len];
+}
+
+function cross(a: [number, number, number], b: [number, number, number]): [number, number, number] {
+  return [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+}
+
+/** Never lets the head collapse all the way to a line even fully edge-on — a real head still
+ * has real depth from the side, it doesn't vanish. */
+const MIN_FORESHORTEN = 0.4;
+
 /** How many fake segments the crown extension is divided into. Each one gets its own
  * `numLanes` recomputed from its own local width (generateChainMarks already does this per
  * segment) — enough segments here is what lets lane count actually taper down toward the
@@ -94,26 +107,39 @@ const CROWN_SEGMENTS = 6;
  * represent a near-zero-width tip.
  *
  * Orientation note, a deliberate simplification versus Round 21-24: the lane (across-head) axis
- * now comes from `generateChainMarks`' own `segDir x viewForward` (same as every limb), not from
- * a shoulder-derived body-relative axis. That axis's OLD second job — foreshortening the head's
- * own width as the dancer's body (not just their head) turns relative to the fixed camera — is
- * confirmed lost, not just theoretically: sampled `shoulderWidth`, the body-rotation angle
- * (shoulder direction), and head tilt across the whole dance (every 20th frame) and found
- * `shoulderWidth` is literally constant (7.88 at every sample — a rigid bone length, never a
- * source of variation, old system or new), the shoulder-direction/body-rotation angle swings
- * across nearly the FULL 360 degrees over the course of the dance, and head tilt varies only
- * modestly (roughly 2-27 degrees) by comparison. Tilt still drives the crown's own lean here
- * (via `up`) — that part carried over — but the big-swing body-rotation signal drove real,
- * frame-to-frame-visible variety in the old shoulder-relative system and drives nothing here.
- * See docs/work/pose-pipeline.md Round 28 for the "why does the head feel static now" thread
- * this finding answers, and for what's being considered to reintroduce it.
+ * comes from `generateChainMarks`' own `segDir x viewForward` (same as every limb), not from a
+ * shoulder-derived body-relative axis. That axis's OLD second job — foreshortening the head's own
+ * width as the dancer's body (not just their head) turns relative to the fixed camera — was
+ * confirmed lost by Round 28's data (shoulder-direction/body-rotation swings across nearly the
+ * full 360 degrees over a dance; that's the dominant source of the old system's frame-to-frame
+ * variety, and nothing here was driving off it). Round 29 reintroduces just that ONE effect —
+ * not the full shoulder-relative axis — as a scale on `rx` alone (see `foreshorten` below):
+ * cheap, no changes to the shared `generateChainMarks`/`Chain` plumbing, targets the confirmed
+ * signal directly instead of restoring Round 21-24's fuller (and more expensive) machinery.
  */
-export function buildHeadCrownChain(cache: PoseCache, headJoints: HeadJoints, dancerIndex: number, frame: number): Chain {
+export function buildHeadCrownChain(
+  cache: PoseCache,
+  headJoints: HeadJoints,
+  dancerIndex: number,
+  frame: number,
+  viewForward: [number, number, number]
+): Chain {
   const leftArm = jointWorldPosition(cache, dancerIndex, frame, headJoints.leftArmJoint);
   const rightArm = jointWorldPosition(cache, dancerIndex, frame, headJoints.rightArmJoint);
 
   const shoulderVec: [number, number, number] = [rightArm[0] - leftArm[0], rightArm[1] - leftArm[1], rightArm[2] - leftArm[2]];
   const shoulderWidth = Math.hypot(shoulderVec[0], shoulderVec[1], shoulderVec[2]) || 1;
+
+  // How face-on vs. edge-on the dancer's body currently is to the fixed camera: 1.0 when the
+  // shoulder line runs parallel to the camera's own left-right axis (facing the camera, or its
+  // back — either way, full width on screen), toward 0 when the shoulder line points toward/
+  // away from the camera instead (a body turned to present its side — narrow on screen, the
+  // same real perspective effect a photo of a person turning would show). `cameraRight` uses
+  // world-up rather than the camera's own (fixed) up vector — equivalent here since the camera
+  // never rolls, and avoids threading another vector through for one dot product.
+  const cameraRight = normalize(cross([0, 1, 0], viewForward));
+  const alignment = Math.abs(shoulderVec[0] * cameraRight[0] + shoulderVec[1] * cameraRight[1] + shoulderVec[2] * cameraRight[2]) / shoulderWidth;
+  const foreshorten = MIN_FORESHORTEN + (1 - MIN_FORESHORTEN) * alignment;
 
   // Real-world extent (how far the crown reaches past the head joint) — fixed off shoulder
   // width alone, NOT scaled by the strokeWidthScale UI knob. That matches every real chain:
@@ -121,8 +147,10 @@ export function buildHeadCrownChain(cache: PoseCache, headJoints: HeadJoints, da
   // multiplied by style.widthScale the same as any limb bone), it never moves a joint. The old
   // oval-disc code scaled the head's own reach by strokeWidthScale too, which was actually an
   // inconsistency this rewrite incidentally fixes rather than a behaviour worth preserving.
+  // `height` (the up-down extent) is NOT foreshortened — turning left/right doesn't change how
+  // tall a head looks, only `rx` (the across-head extent) responds to body rotation.
   const height = shoulderWidth * 0.48;
-  const rx = shoulderWidth * 0.17;
+  const rx = shoulderWidth * 0.17 * foreshorten;
 
   const jointPath: JointRef[] = [realJoint(headJoints.headJoint)];
   const thickness: number[] = [];

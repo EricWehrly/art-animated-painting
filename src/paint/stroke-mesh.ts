@@ -29,12 +29,14 @@ const dabVertexShader = /* glsl */ `
   in float iVolume;
   in vec3 iColor;
   in float iSeed;
+  in float iRound;
 
   out vec2 vUv;
   out vec3 vColor;
   out float vVolume;
   out float vSeed;
   out float vWidth;
+  out float vRound;
 
   void main() {
     vec3 viewCenter = (modelViewMatrix * vec4(iCenter, 1.0)).xyz;
@@ -55,57 +57,92 @@ const dabVertexShader = /* glsl */ `
     vVolume = iVolume;
     vSeed = iSeed;
     vWidth = iWidth;
+    vRound = iRound;
   }
 `;
 
-// Shared by both dab fragment shaders below — computes alpha (coverage) and heightProfile
-// (the paint's cross-section shape) identically either way, so the color pass and the height
-// pass always agree on where a dab actually is. A standalone dab is ALWAYS capped at both
-// ends (it's never part of a chain), so — unlike the ribbon shape logic below — the tip taper
-// here is unconditional.
+// Shared by both dab fragment shaders below — computes alpha (coverage), heightProfile (the
+// paint's cross-section shape), and bristle (pigment-load variation the color shader uses)
+// identically either way, so the color pass and the height pass always agree on where a dab
+// actually is. Branches on vRound: the default path is a brush dab (a loaded brush/knife
+// dragged across the surface — tapered ends, directional bristle ridging, always capped at
+// both ends since a standalone dab is never part of a chain); the round path (see
+// pose/strokes.ts's Stroke.round doc comment) is a flung droplet that beaded up on landing —
+// smooth radial falloff, a domed profile, no directional ridging. Added in Round 29 after
+// speckles (the only round: true caller today) read as "small stroked paint with a narrower
+// base" rather than a real droplet using the brush path unconditionally.
 const dabShapeGLSL = /* glsl */ `
   float across = abs(vUv.y - 0.5) * 2.0; // 0 at center, 1 at edge
   float along = vUv.x; // 0..1 along the whole dab
 
-  // A perfectly smooth-sided stroke reads as a mechanical decal — real paint applied with a
-  // loaded brush or knife tears unevenly along its edge instead of stopping on a clean line.
-  float tearPhase = along * 9.0 + vSeed * 13.0;
-  float tear = sin(tearPhase) * 0.5 + sin(tearPhase * 2.3 + vSeed * 5.0) * 0.3;
-  float edgeStart = clamp(0.5 + 0.16 * tear, 0.15, 0.7);
-  float widthMask = 1.0 - smoothstep(edgeStart, edgeStart + 0.38, across);
+  float alpha;
+  float heightProfile;
+  float bristle;
 
-  // Tip/tail look dragged/lifted-off rather than a perfectly rounded cap — always applied,
-  // since a standalone dab is always a real beginning/end of a brush touch.
-  float capTear = 0.5 + 0.5 * sin(vUv.y * 7.0 + vSeed * 9.0);
-  float tearCapStart = mix(0.0, 0.05, capTear);
-  float tearCapEnd = mix(0.84, 0.94, capTear);
-  float startFade = smoothstep(tearCapStart, tearCapStart + 0.1, along);
-  float endFade = 1.0 - smoothstep(tearCapEnd, tearCapEnd + 0.08, along);
-  float endCap = startFade * endFade;
+  if (vRound < 0.5) {
+    // A perfectly smooth-sided stroke reads as a mechanical decal — real paint applied with a
+    // loaded brush or knife tears unevenly along its edge instead of stopping on a clean line.
+    float tearPhase = along * 9.0 + vSeed * 13.0;
+    float tear = sin(tearPhase) * 0.5 + sin(tearPhase * 2.3 + vSeed * 5.0) * 0.3;
+    float edgeStart = clamp(0.5 + 0.16 * tear, 0.15, 0.7);
+    float widthMask = 1.0 - smoothstep(edgeStart, edgeStart + 0.38, across);
 
-  float ridgeSpacing = 0.42;
-  float cycles = min(vWidth / ridgeSpacing, 40.0);
-  float wave1 = vUv.y * cycles * 6.28318 + sin(vUv.x * 6.28318 + vSeed * 3.0) * 0.6 + vSeed * 11.0;
-  float wave2 = vUv.y * cycles * 1.7 * 6.28318 + vSeed * 7.0;
-  float rawBristle = 0.5 + 0.35 * sin(wave1) + 0.15 * sin(wave2);
+    // Tip/tail look dragged/lifted-off rather than a perfectly rounded cap — always applied,
+    // since a standalone dab is always a real beginning/end of a brush touch.
+    float capTear = 0.5 + 0.5 * sin(vUv.y * 7.0 + vSeed * 9.0);
+    float tearCapStart = mix(0.0, 0.05, capTear);
+    float tearCapEnd = mix(0.84, 0.94, capTear);
+    float startFade = smoothstep(tearCapStart, tearCapStart + 0.1, along);
+    float endFade = 1.0 - smoothstep(tearCapEnd, tearCapEnd + 0.08, along);
+    float endCap = startFade * endFade;
 
-  float phaseDeriv = fwidth(wave1);
-  float bristleAmp = clamp(1.0 - phaseDeriv / 3.14159, 0.0, 1.0);
+    float ridgeSpacing = 0.42;
+    float cycles = min(vWidth / ridgeSpacing, 40.0);
+    float wave1 = vUv.y * cycles * 6.28318 + sin(vUv.x * 6.28318 + vSeed * 3.0) * 0.6 + vSeed * 11.0;
+    float wave2 = vUv.y * cycles * 1.7 * 6.28318 + vSeed * 7.0;
+    float rawBristle = 0.5 + 0.35 * sin(wave1) + 0.15 * sin(wave2);
 
-  float facetCell = floor(along * 2.6 + vSeed * 8.0);
-  float facetHash = fract(sin(facetCell * 12.9898 + vSeed * 78.233) * 43758.5453);
-  float facetShade = 0.6 + 0.4 * facetHash;
+    float phaseDeriv = fwidth(wave1);
+    float bristleAmp = clamp(1.0 - phaseDeriv / 3.14159, 0.0, 1.0);
 
-  float bristle = mix(1.0, rawBristle, 0.6 * bristleAmp) * mix(1.0, facetShade, 0.55);
+    float facetCell = floor(along * 2.6 + vSeed * 8.0);
+    float facetHash = fract(sin(facetCell * 12.9898 + vSeed * 78.233) * 43758.5453);
+    float facetShade = 0.6 + 0.4 * facetHash;
 
-  float alpha = clamp(widthMask * endCap, 0.0, 1.0);
+    bristle = mix(1.0, rawBristle, 0.6 * bristleAmp) * mix(1.0, facetShade, 0.55);
+
+    alpha = clamp(widthMask * endCap, 0.0, 1.0);
+
+    float crown = cos(clamp(across, 0.0, 1.0) * 1.5707963);
+    float ridgeHeight = (rawBristle - 0.5) * bristleAmp;
+    float lumpPhase = along * 5.0 + vSeed * 17.0;
+    float lump = 0.9 + 0.1 * sin(lumpPhase) * sin(lumpPhase * 0.63 + vSeed * 4.0);
+    heightProfile = endCap * crown * (lump * mix(1.0, facetShade, 0.2) + ridgeHeight * 0.35);
+  } else {
+    // Radial distance from the dab's own center, in units where 1.0 is the shorter of its two
+    // half-axes — a length==width dab reads as a true circle; a longer one stays round across
+    // its width and only stretches gently at the ends, an oblong bead rather than a capsule.
+    vec2 centered = (vUv - 0.5) * 2.0;
+    float radial = length(centered);
+
+    // A little organic irregularity around the edge — real droplets aren't perfect circles —
+    // but smooth and low-frequency, not the brush path's directional tearing.
+    float angle = atan(centered.y, centered.x);
+    float wobble = 0.07 * sin(angle * 3.0 + vSeed * 7.0) + 0.04 * sin(angle * 5.0 + vSeed * 4.0);
+    float roundEdge = clamp(0.72 + wobble, 0.5, 0.92);
+    alpha = clamp(1.0 - smoothstep(roundEdge, roundEdge + 0.24, radial), 0.0, 1.0);
+
+    // Mild grain only, no directional ridge waves — a glossy bead's surface varies softly, it
+    // doesn't carry a dragged brush's own bristle pattern.
+    float grainPhase = radial * 6.0 + vSeed * 13.0;
+    bristle = 0.5 + 0.12 * sin(grainPhase) * sin(grainPhase * 0.7 + vSeed * 5.0);
+
+    // Hemisphere-like dome, not the brush path's flat-crowned ridge strip — this is what
+    // actually reads as "bubbled" rather than "pressed."
+    heightProfile = alpha * cos(clamp(radial, 0.0, 1.0) * 1.5707963);
+  }
+
   if (alpha < 0.02) discard;
-
-  float crown = cos(clamp(across, 0.0, 1.0) * 1.5707963);
-  float ridgeHeight = (rawBristle - 0.5) * bristleAmp;
-  float lumpPhase = along * 5.0 + vSeed * 17.0;
-  float lump = 0.9 + 0.1 * sin(lumpPhase) * sin(lumpPhase * 0.63 + vSeed * 4.0);
-  float heightProfile = endCap * crown * (lump * mix(1.0, facetShade, 0.2) + ridgeHeight * 0.35);
 `;
 
 const dabColorFragmentShader = /* glsl */ `
@@ -116,6 +153,7 @@ const dabColorFragmentShader = /* glsl */ `
   in float vVolume;
   in float vSeed;
   in float vWidth;
+  in float vRound;
 
   out vec4 outColor;
 
@@ -139,6 +177,7 @@ const dabHeightFragmentShader = /* glsl */ `
   in float vVolume;
   in float vSeed;
   in float vWidth;
+  in float vRound;
 
   out vec4 outColor;
 
@@ -171,6 +210,7 @@ interface InstancedAttrs {
   iVolume: THREE.InstancedBufferAttribute;
   iColor: THREE.InstancedBufferAttribute;
   iSeed: THREE.InstancedBufferAttribute;
+  iRound: THREE.InstancedBufferAttribute;
 }
 
 function createInstancedGeometry(maxInstances: number): InstancedAttrs {
@@ -185,12 +225,13 @@ function createInstancedGeometry(maxInstances: number): InstancedAttrs {
   const iVolume = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances), 1);
   const iColor = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances * 3), 3);
   const iSeed = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances), 1);
-  for (const [name, attr] of Object.entries({ iCenter, iVelocity, iWidth, iLength, iVolume, iColor, iSeed })) {
+  const iRound = new THREE.InstancedBufferAttribute(new Float32Array(maxInstances), 1);
+  for (const [name, attr] of Object.entries({ iCenter, iVelocity, iWidth, iLength, iVolume, iColor, iSeed, iRound })) {
     attr.setUsage(THREE.DynamicDrawUsage);
     geometry.setAttribute(name, attr);
   }
 
-  return { geometry, iCenter, iVelocity, iWidth, iLength, iVolume, iColor, iSeed };
+  return { geometry, iCenter, iVelocity, iWidth, iLength, iVolume, iColor, iSeed, iRound };
 }
 
 function writeStrokes(attrs: InstancedAttrs, strokes: Stroke[], maxInstances: number) {
@@ -204,6 +245,7 @@ function writeStrokes(attrs: InstancedAttrs, strokes: Stroke[], maxInstances: nu
     attrs.iVolume.setX(i, s.volume);
     attrs.iColor.setXYZ(i, s.color[0], s.color[1], s.color[2]);
     attrs.iSeed.setX(i, s.seed);
+    attrs.iRound.setX(i, s.round ? 1 : 0);
   }
   attrs.geometry.instanceCount = n;
   attrs.iCenter.needsUpdate = true;
@@ -213,6 +255,7 @@ function writeStrokes(attrs: InstancedAttrs, strokes: Stroke[], maxInstances: nu
   attrs.iVolume.needsUpdate = true;
   attrs.iColor.needsUpdate = true;
   attrs.iSeed.needsUpdate = true;
+  attrs.iRound.needsUpdate = true;
 }
 
 function makeDabMaterial(fragmentShader: string): THREE.ShaderMaterial {

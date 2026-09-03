@@ -219,7 +219,7 @@ async function main() {
         // per-frame quantity. showHeads only gates whether this second call's output reaches
         // allStrokes — the neck's own tube (part of `chains` above) always paints regardless,
         // matching the toggle's "hide the head, but keep the rest painting" contract.
-        const crownChain = buildHeadCrownChain(cache, headJoints, dancerIndex, frame);
+        const crownChain = buildHeadCrownChain(cache, headJoints, dancerIndex, frame, viewForward);
         const crownMarks = generateChainMarks(cache, [crownChain], dancerIndex, frame, style, viewForward, debugDabs);
         if (params.showHeads) allStrokes.push(...crownMarks);
       }

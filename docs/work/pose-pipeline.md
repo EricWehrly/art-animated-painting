@@ -1502,3 +1502,54 @@ most invasive relative to Round 25's collapse into the shared chain model:
 Leaning toward (A) as the primary fix (cheapest, targets the actual confirmed-dominant signal)
 with (B) as a plausible complementary addition, over (C) — but this is explicitly what the user
 asked to discuss before implementing, not a decision made here.
+
+### Round 29: implemented option A, and gave speckles their own shape
+
+User approved option A. Separately, positive on the gap/head fixes overall but flagged that
+speckles read as "just stroked paint with a narrower base... 'pressed' like our regular brushed,
+stroked paint" rather than "bubbled," alongside a Pollock reference showing round, domed
+splatter droplets.
+
+**Option A**: `buildHeadCrownChain` now takes `viewForward` and computes `alignment` — the
+absolute dot product of the shoulder vector against `cameraRight` (`normalize(cross([0,1,0],
+viewForward))`), 1.0 when the shoulder line runs parallel to the camera's own left-right axis
+(facing the camera or its back — full width on screen either way) fading toward 0 when the
+shoulders point toward/away from the camera instead (a body turned to present its side). `rx`
+(the across-head extent) is scaled by `MIN_FORESHORTEN + (1 - MIN_FORESHORTEN) * alignment`
+(floor 0.4 — a head viewed edge-on still has real depth, it shouldn't collapse to a line).
+`height` is deliberately NOT scaled by this — turning left/right doesn't change how tall a head
+looks. Verified against the exact frames Round 28's data sampling flagged as extremes (frame 0,
+shoulder-direction ≈ parallel to world X; frame 20, ≈ parallel to world Z): the head is visibly,
+substantially narrower at frame 20 than frame 0, confirming the effect actually reads on screen,
+not just in the underlying numbers.
+
+**Speckle shape.** Traced the actual cause: every dab in the toy — main figure, speckles, swatch
+strokes alike — shares one fragment shader (`stroke-mesh.ts`'s `dabShapeGLSL`), built for a
+brush dragged across a surface: tapered/pointed at both ends along its length, with directional
+ridge-wave "bristle" texture running its length. `generateSpeckles`' own doc comment had assumed
+a speckle was already "a small, nearly round stroke" needing no shape change — true of the
+STROKE DATA's rough proportions, but the shared SHAPE was never actually round regardless of a
+dab's own length/width ratio, which is what made speckles read as miniature brush strokes
+instead of flung droplets.
+
+Added `Stroke.round?: boolean` and threaded it through as a new `iRound` instanced attribute
+(`stroke-mesh.ts`) to a genuine branch in `dabShapeGLSL`: the existing path is unchanged for
+every other caller (main figure, branch-fill, swatch pages — none set `round`, so they render
+identically to before), and a new path activates for `round: true` — radial falloff from the
+dab's own center (a soft circular edge with mild organic wobble, not the brush path's directional
+tearing) and a hemisphere-like domed height profile (not the brush path's flat-crowned ridge
+strip), with only mild grain instead of directional bristle waves feeding the color pass's
+pigment-load variation. `generateSpeckles` now sets `round: true` on every droplet, and its own
+length/width formula was restructured to build length AS A MULTIPLE OF width (0.95-1.25x for
+dots, 1.4-2.2x for streaks) rather than each from an independent random range, which is what let
+"nearly round" dots actually end up 2-3x longer than wide despite the doc comment's own
+assumption. Volume roughly doubled (0.04-0.14 to 0.08-0.23-ish) so a droplet actually reads as
+raised/beaded rather than flat.
+
+Verified on `swatch.html`'s own speckle-enabled strokes (isolated, easy to inspect close up,
+unlike hunting through a moving dance for a fast-enough frame): speckles now read as a cluster of
+distinct round, domed blobs next to the stroke they came from, clearly different in kind from the
+elongated stroke itself — not the same shape at a smaller size. Confirmed the non-speckle main
+figure is visually unchanged (limbs, head, branch-fill all still show the ordinary tapered/ridged
+brush shape) across a fresh default load and a duress/motion frame. No console errors either
+change. `npx tsc --noEmit` clean throughout.

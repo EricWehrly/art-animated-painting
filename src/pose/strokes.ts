@@ -3,11 +3,10 @@ import { resolveJointPosition } from "./pose-cache";
 import type { Chain } from "./skeleton";
 import { sampleBoneAtT, type Emitter } from "./emitters";
 
-/** A single paint dab — a billboard quad, always capped/tapered at both ends, oriented along
- * `velocity` (a direction only; magnitude is ignored — see stroke-mesh.ts). Used for the main
- * figure's limbs, speckles, and the swatch calibration page alike: a real painted limb is
- * covered by many independent, overlapping brush gestures, not traced by one continuous line
- * — see generateChainMarks. */
+/** A single paint dab — a billboard quad, oriented along `velocity` (a direction only;
+ * magnitude is ignored — see stroke-mesh.ts). Used for the main figure's limbs, speckles, and
+ * the swatch calibration page alike: a real painted limb is covered by many independent,
+ * overlapping brush gestures, not traced by one continuous line — see generateChainMarks. */
 export interface Stroke {
   position: [number, number, number];
   velocity: [number, number, number];
@@ -20,6 +19,12 @@ export interface Stroke {
   color: [number, number, number];
   /** Per-instance phase, decorrelates the procedural brush texture between strokes. */
   seed: number;
+  /** false/omitted (default) = the usual capped-and-tapered brush dab, ridged along its own
+   * length like a loaded bristle dragged across the surface. true = a rounded blob instead —
+   * smooth radial falloff, domed relief, no directional bristle ridging — a flung droplet that
+   * beaded up on landing rather than a pressed brush stroke. See generateSpeckles' own doc
+   * comment for why speckles specifically need this and the main figure's strokes don't. */
+  round?: boolean;
 }
 
 export interface BoneStrokeStyle {
@@ -692,8 +697,11 @@ export interface SpeckleStyle {
 /**
  * Small flung droplets beyond each fast-moving emitter's tip — the spatter/speckle look from
  * a real paint fling, distinct from the main brush-shaped strokes. Reuses the Stroke type and
- * the same stroke-mesh rendering: a speckle is just a small, nearly round stroke, so no new
- * geometry or shader is needed. See docs/work/pose-pipeline.md "Strokes".
+ * the same stroke-mesh rendering, with `round: true` — the same tapered-and-ridged dab shape
+ * every limb mark uses read as "small stroked paint with a narrower base" rather than a real
+ * flung droplet once looked at closely (a droplet that lands beads up into a smooth, domed
+ * blob; it doesn't carry a dragged brush's own directional ridging or pointed end-taper). See
+ * docs/work/pose-pipeline.md "Strokes" and Round 29 for the round-shape addition.
  *
  * Reads as small emphasis on the motion — "like someone's spitting at you when they're
  * talking," per the user's own description (docs/work/pose-pipeline.md Round 17) — NOT a
@@ -766,6 +774,14 @@ export function generateSpeckles(emitters: Emitter[], frame: number, style: Spec
       // from the strokes, like they've been spat. Not too far" (Round 20).
       const flingDist = style.spread * (0.6 + r1 * 0.9) * speedRatio * streakMul;
 
+      // Width first, length as a multiple of it — a dot stays close to round (0.95-1.25x its
+      // own width), a streak stretches further (1.4-2.2x), but neither is built from an
+      // independent length formula the way Round 20's version was, which is what let dots end
+      // up 2-3x longer than wide despite being called "nearly round." See Round 29.
+      const width = style.sizeScale * (0.35 + r2 * 0.55);
+      const lengthMul = isStreak ? 1.4 + r2 * 0.8 : 0.95 + r1 * 0.3;
+      const length = width * lengthMul * elongation;
+
       speckles.push({
         position: [
           e.position[0] + flungDir[0] * flingDist,
@@ -773,14 +789,15 @@ export function generateSpeckles(emitters: Emitter[], frame: number, style: Spec
           e.position[2] + flungDir[2] * flingDist,
         ],
         velocity: flungDir,
-        // Widened size range — "they should vary... a bit bigger [on average], varying amounts
-        // smaller [too]" (Round 20): more real spread between tiny dots and notably larger
-        // ones, not every droplet clustered near one size.
-        length: style.sizeScale * (0.3 + r1 * 1.3) * elongation * streakMul,
-        width: (style.sizeScale * (0.2 + r2 * 0.7) * (1 - speedRatio * 0.15)) / (isStreak ? streakMul * 0.7 : 1),
-        volume: (0.04 + r1 * 0.06) * (1 + speedRatio * 0.4),
+        length,
+        width,
+        // Bumped up from Round 20's range (0.04-0.14) — a bubble needs to actually read as
+        // RAISED/domed, not just present; the old range was tuned for a flat brush mark's
+        // relief, not a beaded droplet's.
+        volume: (0.08 + r1 * 0.1) * (1 + speedRatio * 0.3),
         color: style.color,
         seed,
+        round: true,
       });
     }
   });
