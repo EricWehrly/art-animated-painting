@@ -119,27 +119,50 @@ const dabShapeGLSL = /* glsl */ `
     float lump = 0.9 + 0.1 * sin(lumpPhase) * sin(lumpPhase * 0.63 + vSeed * 4.0);
     heightProfile = endCap * crown * (lump * mix(1.0, facetShade, 0.2) + ridgeHeight * 0.35);
   } else {
-    // Radial distance from the dab's own center, in units where 1.0 is the shorter of its two
-    // half-axes — a length==width dab reads as a true circle; a longer one stays round across
-    // its width and only stretches gently at the ends, an oblong bead rather than a capsule.
-    vec2 centered = (vUv - 0.5) * 2.0;
-    float radial = length(centered);
+    // A comet/teardrop, not a symmetric circle: a round, domed bead of paint mass at the FRONT
+    // (the direction of travel — iVelocity's own tangent, vUv.x=1) with a thin trailing drip
+    // stretching out BEHIND it toward vUv.x=0, thinning as it runs. A perfectly round blob (this
+    // shape's first version) read as "bubbled" but lost the sense of having been FLUNG — real
+    // spatter carries a trailing thread pulled out by momentum, which is what makes it read as
+    // drippy/runny rather than a bead stuck in place. See docs/work/pose-pipeline.md Round 30.
+    float alongFromFront = 1.0 - vUv.x;
+    float acrossC = (vUv.y - 0.5) * 2.0;
 
-    // A little organic irregularity around the edge — real droplets aren't perfect circles —
-    // but smooth and low-frequency, not the brush path's directional tearing.
-    float angle = atan(centered.y, centered.x);
-    float wobble = 0.07 * sin(angle * 3.0 + vSeed * 7.0) + 0.04 * sin(angle * 5.0 + vSeed * 4.0);
-    float roundEdge = clamp(0.72 + wobble, 0.5, 0.92);
-    alpha = clamp(1.0 - smoothstep(roundEdge, roundEdge + 0.24, radial), 0.0, 1.0);
+    // Fraction of the dab's own length the round head occupies before the trailing drip begins.
+    const float BLOB_SPAN = 0.32;
+    // Width available at this along-position: full through the head, then tapering linearly
+    // toward a thin trailing line — a real drip thins out as it runs, it doesn't hold a
+    // constant thickness and then snap off.
+    float taperT = clamp((alongFromFront - BLOB_SPAN) / (1.0 - BLOB_SPAN), 0.0, 1.0);
+    float dripWobble = 0.09 * sin(alongFromFront * 14.0 + vSeed * 11.0) * taperT;
+    float widthAt = mix(1.0, 0.16, taperT) + dripWobble;
+    float tailAlpha = 1.0 - smoothstep(0.72, 1.02, abs(acrossC) / max(widthAt, 0.05));
+
+    // The round head itself — centered a little inside the blob region, not flush with the
+    // very front tip, so it reads as a bead the tail trails off of rather than a sphere sliced
+    // flat where the tail begins.
+    float headAlongCenter = BLOB_SPAN * 0.5;
+    vec2 headVec = vec2((alongFromFront - headAlongCenter) / (BLOB_SPAN * 0.85), acrossC);
+    float headDist = length(headVec);
+    float headWobble = 0.06 * sin(atan(headVec.y, headVec.x) * 3.0 + vSeed * 8.0);
+    float headEdge = clamp(0.82 + headWobble, 0.6, 0.98);
+    float headAlpha = 1.0 - smoothstep(headEdge, headEdge + 0.22, headDist);
+
+    alpha = clamp(max(headAlpha, tailAlpha), 0.0, 1.0);
+    // Fades the very tip of the trailing drip to a point instead of an abrupt cutoff.
+    alpha *= 1.0 - smoothstep(0.95, 1.0, alongFromFront);
 
     // Mild grain only, no directional ridge waves — a glossy bead's surface varies softly, it
     // doesn't carry a dragged brush's own bristle pattern.
-    float grainPhase = radial * 6.0 + vSeed * 13.0;
+    float grainPhase = (headDist + alongFromFront * 4.0) * 6.0 + vSeed * 13.0;
     bristle = 0.5 + 0.12 * sin(grainPhase) * sin(grainPhase * 0.7 + vSeed * 5.0);
 
-    // Hemisphere-like dome, not the brush path's flat-crowned ridge strip — this is what
-    // actually reads as "bubbled" rather than "pressed."
-    heightProfile = alpha * cos(clamp(radial, 0.0, 1.0) * 1.5707963);
+    // The head domes up like a bead of wet paint; the trailing drip stays low and thin — a
+    // real drip is a thin smear, not a raised ridge — so it doesn't fight the head for being
+    // the visually "thick" part.
+    float headHeight = headAlpha * cos(clamp(headDist, 0.0, 1.0) * 1.5707963);
+    float tailHeight = tailAlpha * mix(1.0, 0.25, taperT) * 0.5;
+    heightProfile = alpha * max(headHeight, tailHeight);
   }
 
   if (alpha < 0.02) discard;

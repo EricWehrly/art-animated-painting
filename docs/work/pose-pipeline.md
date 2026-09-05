@@ -1553,3 +1553,54 @@ elongated stroke itself — not the same shape at a smaller size. Confirmed the 
 figure is visually unchanged (limbs, head, branch-fill all still show the ordinary tapered/ridged
 brush shape) across a fresh default load and a duress/motion frame. No console errors either
 change. `npx tsc --noEmit` clean throughout.
+
+### Round 30: a real rendering bug in the hips (not a new one), and speckles overcorrected into "stubby and blobby"
+
+User's follow-up, with an annotated screenshot: "there's something weird happening here with the
+hips" (a flat, geometrically clean, near-white patch on the torso, at a specific frame of a new
+dance — "Salsa 6 — Hammerlock" — never scrutinized this closely before) and, separately, on the
+new speckle shape: "looks weird and stubby and blobby, rather than drippy and runny as hoped,"
+with a Pollock reference showing round droplets AND long thin drip trails, not just circles.
+
+**The hip artifact was a genuine bug, and a stubborn one to isolate.** Reproduced exactly (dance
+06, frame 226) and ruled out, in order, every plausible cause before finding the real one:
+branch-fill marks (disabled the whole pass — artifact unchanged), the fewLanesFactor margin
+widening from Round 27 (forced to 0 — artifact disappeared, but so did all the OTHER gap fixes,
+confirming it's load-bearing elsewhere and not itself the cause here), cross-dancer color
+blending (hid the other dancer entirely with `soloDancer` — artifact unchanged), and the head
+crown chain (`showHeads: false` — artifact unchanged). Diagnosed the actual mechanism by
+temporarily wiring the shading pass to output its own intermediate values as raw color (`spec`,
+`ao`, `diff` into RGB) instead of the final composited result — the specular term alone lit up
+distinctly and broadly at exactly the artifact's location, unlike the small scattered glints
+everywhere else on the figure.
+
+Root cause: `shading-pass.ts`'s specular lobe is tuned for stroke-mesh.ts's FINE bristle ridges —
+lots of tiny facets each catching a small glint. With no depth test, an arm crossing in front of
+the torso (both belonging to the SAME dancer — this isn't a two-figure problem) creates a wide,
+smoothly-graded "ramp" in the combined height field at the boundary between the two overlapping
+surfaces. That ramp has LOW local height variance (it's smooth, not jagged) despite real height
+on both sides — and when its own slope happens to line up with the specular half-vector, the
+existing lobe lights up as one broad, geometrically-clean hotspot instead of scattered glints, a
+"flat card" that reads as a rendering error rather than an intense highlight. Fixed by reusing
+`variance` (the same fine-grained-jaggedness signal AO already computes) to gate the specular
+term directly: low variance suppresses it, high variance (the fine ridges it was actually built
+for) leaves it untouched. Also added a smaller, complementary safety net — scaling `lit` back by
+its own max channel (not clamping each channel independently, which is what produces a flat white
+in the first place) whenever it exceeds what the LDR framebuffer can show, preserving hue for any
+future case that genuinely overflows. Verified: the artifact is gone at the exact repro frame,
+normal scattered specular glints are unaffected everywhere else (swatch page, default dance,
+fresh tab with a clean console).
+
+**Speckles: the round-blob shape from Round 29 fixed "pressed like a brush stroke" but
+overcorrected into a shape with no sense of having been flung.** Redesigned `dabShapeGLSL`'s
+round branch as a comet/teardrop instead of a circle: a round, domed bead of paint mass at the
+dab's FRONT (the direction of travel), with a thin trailing drip stretching out behind it toward
+the back, thinning as it runs rather than holding a constant width and snapping off. Re-tuned
+`generateSpeckles`' length-as-a-multiple-of-width ratios back up (2.2-3.6x for dots, 4-7x for
+streaks — Round 29 had pulled these down close to 1:1 specifically to kill the OLD pointed-taper
+problem, which the new shape doesn't have) so there's actually enough length for the drip tail to
+read. Verified on `swatch.html` at close range (camera pulled in tight rather than using CSS
+zoom, more reliable for judging small-mark shape precisely): droplets now read as a rounded head
+tapering to a real point, no directional bristle ridging, clearly distinct from both the old
+pointed-brush-stroke look and the immediately-prior plain-circle look. No console errors either
+fix. `npx tsc --noEmit` clean.

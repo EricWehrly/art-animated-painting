@@ -102,6 +102,22 @@ const quadFragmentShader = /* glsl */ `
     float wideVariance = abs(hL2 - h) + abs(hR2 - h) + abs(hU2 - h) + abs(hD2 - h);
     float ao = 1.0 - clamp((variance * 1.4 + wideVariance * 0.5) * uAOStrength, 0.0, 0.82);
 
+    // The specular lobe above is tuned for stroke-mesh.ts's FINE bristle ridges (see its own
+    // comment) — lots of tiny facets, each contributing a small scattered glint. It was never
+    // meant to respond to a BROAD, smooth slope, but one can appear where two independently-
+    // moving body parts overlap with no depth test (an arm crossing the torso, say): a wide,
+    // gently-graded "ramp" between the arm's own height and the torso's underneath it, with
+    // low LOCAL variance (it's smooth, not jagged) despite real height on both sides. If that
+    // ramp's own angle happens to line up with the specular half-vector, it lights up as one
+    // broad, geometrically-clean hotspot instead of scattered glints — a "flat card" that reads
+    // as a rendering error, not paint (see docs/work/pose-pipeline.md Round 30). variance is
+    // already the fine-grained-jaggedness signal AO uses; reusing it to gate specular directly
+    // (low variance = smooth = suppress) targets exactly this mismatch without touching the
+    // scattered fine-ridge glints the lobe was actually designed for, which keep their normal
+    // high-variance surroundings untouched.
+    float specFineness = clamp(variance * 3.0, 0.0, 1.0);
+    spec *= specFineness;
+
     // Thickness shading: paint reads as paint partly because thick, freshly-loaded strokes
     // are brighter/more saturated than thin ones. Without this, height only ever shows up
     // as a lighting normal — the base color itself never responds to how much paint is
@@ -111,6 +127,19 @@ const quadFragmentShader = /* glsl */ `
     vec3 thickPaint = paintColor * mix(0.8, 1.25, thickness) + vec3(0.08) * impasto;
 
     vec3 lit = thickPaint * (0.3 + 0.75 * diff) * ao + specTint * spec * 0.55;
+
+    // No depth test means independently-moving body parts (an arm crossing in front of the
+    // torso, say) can overlap densely in screen space with nothing to stop it — their heights
+    // and diffuse/specular contributions all stack at the same pixel. Enough stacking pushes
+    // lit above what this LDR framebuffer can show, and every channel clips to the same flat
+    // 1.0 — a "flat white card" that reads as a rendering error, not an intense highlight (see
+    // docs/work/pose-pipeline.md Round 30). Scaling back by the max channel — not clamping each
+    // channel independently, which is what produces the flat white in the first place — keeps
+    // the pixel's own hue intact, so an overexposed spot reads as "very bright paint" instead of
+    // "the paint disappeared." A no-op whenever litMax <= 1.0, so ordinary, non-overlapping
+    // painting is completely unaffected.
+    float litMax = max(lit.r, max(lit.g, lit.b));
+    if (litMax > 1.0) lit /= litMax;
 
     // Cheap procedural canvas weave (screen-space, so it reads as fabric texture at any
     // zoom rather than a flat fill) — this is what mostly targets "still reads as screen

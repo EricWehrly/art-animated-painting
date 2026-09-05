@@ -774,12 +774,14 @@ export function generateSpeckles(emitters: Emitter[], frame: number, style: Spec
       // from the strokes, like they've been spat. Not too far" (Round 20).
       const flingDist = style.spread * (0.6 + r1 * 0.9) * speedRatio * streakMul;
 
-      // Width first, length as a multiple of it — a dot stays close to round (0.95-1.25x its
-      // own width), a streak stretches further (1.4-2.2x), but neither is built from an
-      // independent length formula the way Round 20's version was, which is what let dots end
-      // up 2-3x longer than wide despite being called "nearly round." See Round 29.
+      // Width first, length as a multiple of it. Round 29 made these close to 1:1 to fix a
+      // "small stroked paint" look, which fixed the bristle-ridge/pointed-taper problem but
+      // overcorrected into "stubby and blobby" — the round shape needs real length to actually
+      // show its own trailing drip (see stroke-mesh.ts's dabShapeGLSL round branch, rewritten
+      // Round 30 as a comet/teardrop instead of a plain circle). A dot gets a modest tail
+      // (2.2-3.6x its own width), a streak a longer one (4-7x).
       const width = style.sizeScale * (0.35 + r2 * 0.55);
-      const lengthMul = isStreak ? 1.4 + r2 * 0.8 : 0.95 + r1 * 0.3;
+      const lengthMul = isStreak ? 4 + r2 * 3 : 2.2 + r1 * 1.4;
       const length = width * lengthMul * elongation;
 
       speckles.push({
