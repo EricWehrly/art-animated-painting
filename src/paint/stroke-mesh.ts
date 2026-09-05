@@ -126,17 +126,26 @@ const dabShapeGLSL = /* glsl */ `
     // spatter carries a trailing thread pulled out by momentum, which is what makes it read as
     // drippy/runny rather than a bead stuck in place. See docs/work/pose-pipeline.md Round 30.
     float alongFromFront = 1.0 - vUv.x;
-    float acrossC = (vUv.y - 0.5) * 2.0;
+    // A real flung drip doesn't trail in a perfectly straight line — it curves a little as it
+    // decelerates. Bends the tail's own centerline sideways, growing with distance from the
+    // head; direction and amount vary per-instance (vSeed) so a cluster of drips doesn't all
+    // bend the same way. Round 30's first version kept this perfectly straight, which combined
+    // with a taper that only narrowed near the very tip is what read as a rigid "hay bale"
+    // spike rather than a drip — fixed together with the taper curve below.
+    float curveAmount = 0.4 * sin(vSeed * 5.7);
+    float acrossC = (vUv.y - 0.5) * 2.0 - curveAmount * alongFromFront * alongFromFront;
 
     // Fraction of the dab's own length the round head occupies before the trailing drip begins.
-    const float BLOB_SPAN = 0.32;
-    // Width available at this along-position: full through the head, then tapering linearly
-    // toward a thin trailing line — a real drip thins out as it runs, it doesn't hold a
-    // constant thickness and then snap off.
+    const float BLOB_SPAN = 0.28;
     float taperT = clamp((alongFromFront - BLOB_SPAN) / (1.0 - BLOB_SPAN), 0.0, 1.0);
-    float dripWobble = 0.09 * sin(alongFromFront * 14.0 + vSeed * 11.0) * taperT;
-    float widthAt = mix(1.0, 0.16, taperT) + dripWobble;
-    float tailAlpha = 1.0 - smoothstep(0.72, 1.02, abs(acrossC) / max(widthAt, 0.05));
+    // A real drip thins out FAST right after leaving the head, then stays thin for most of its
+    // own length — not a constant thickness that only narrows at the last moment. The concave
+    // curve (pow < 1) front-loads the thinning; the old linear taper stayed close to full width
+    // for too much of the tail's length, reading as a straight rod rather than a drip.
+    float taperCurve = pow(taperT, 0.35);
+    float dripWobble = 0.13 * sin(alongFromFront * 11.0 + vSeed * 11.0) * taperT;
+    float widthAt = mix(1.0, 0.09, taperCurve) + dripWobble;
+    float tailAlpha = 1.0 - smoothstep(0.68, 1.0, abs(acrossC) / max(widthAt, 0.04));
 
     // The round head itself — centered a little inside the blob region, not flush with the
     // very front tip, so it reads as a bead the tail trails off of rather than a sphere sliced
@@ -161,7 +170,7 @@ const dabShapeGLSL = /* glsl */ `
     // real drip is a thin smear, not a raised ridge — so it doesn't fight the head for being
     // the visually "thick" part.
     float headHeight = headAlpha * cos(clamp(headDist, 0.0, 1.0) * 1.5707963);
-    float tailHeight = tailAlpha * mix(1.0, 0.25, taperT) * 0.5;
+    float tailHeight = tailAlpha * mix(1.0, 0.25, taperCurve) * 0.5;
     heightProfile = alpha * max(headHeight, tailHeight);
   }
 

@@ -1604,3 +1604,53 @@ zoom, more reliable for judging small-mark shape precisely): droplets now read a
 tapering to a real point, no directional bristle ridging, clearly distinct from both the old
 pointed-brush-stroke look and the immediately-prior plain-circle look. No console errors either
 fix. `npx tsc --noEmit` clean.
+
+### Round 31: Round 30 caused two real regressions of its own — a global softening, and speckles that looked like "hay bale" straw
+
+User's follow-up, with fresh screenshots: the whole painting now looks "softer and more blended,"
+more like "house paint" than oil, and the redesigned speckles read as "side of a hay bail" rather
+than drippy. Blunt, correct assessment: "these moved us, ultimately, in the wrong direction." Both
+were real — confirmed directly with side-by-side comparisons (something Round 30's own
+verification skipped, checking only whether the target bug was fixed and whether things looked
+"reasonably normal" at a glance, not whether the painting's overall character had changed) rather
+than taken at the user's word alone.
+
+**The specular-fineness gate (Round 30) was suppressing legitimate texture almost everywhere, not
+just the overlap case it targeted.** Confirmed by toggling `spec *= specFineness` on and off at
+the identical frame/zoom: with it on, the same swatch stroke that used to show a crisp, distinct
+highlight streak along its ridge line reads flat and matte — no glint at all. The mechanism:
+`variance` (single-texel height differences) is meant to distinguish "fine bristle ridge" from
+"broad smooth ramp," but at normal render resolution the texel spacing is often coarser than one
+ridge wavelength (`ridgeSpacing = 0.42` world units in stroke-mesh.ts) — single-texel sampling
+under-resolves the ridges themselves, reading LOW variance even on the fine texture the specular
+lobe was actually built for. The gate couldn't tell the difference it was designed to tell apart;
+it just suppressed specular broadly. Reverted the gate entirely. Kept the smaller, unconditional
+`litMax` clamp from the same round (scales `lit` back by its own max channel only when it
+genuinely exceeds the LDR framebuffer's range) — it's a no-op everywhere except real overflow, so
+it carries none of the same risk, but it's also not sufficient alone: the original hip artifact
+(Round 30) returns in a MILDER form with the fineness gate gone — a faint brighter patch, not a
+stark flat white card, since litMax still prevents the worst hard-clipping case. A real, properly
+targeted fix for the underlying broad-smooth-ramp specular case is still open; finding a signal
+that reliably tells "fine ridge" from "smooth cross-body-part overlap" apart — without also
+catching normal painted surfaces, the way per-texel variance did — needs more careful, dedicated
+work than this round had room for, and isn't worth attempting again without room to verify it
+properly before calling it done.
+
+**The teardrop's tail (Round 30) tapered too late and stayed too straight to read as a drip.**
+The width formula (`mix(1.0, 0.16, taperT)`, linear in `taperT`) kept the tail close to full
+width for most of its own length, only narrowing near the very tip — a straight, roughly
+constant-width strip is exactly what reads as a rigid spike, not a drip. It was also perfectly
+straight (no curvature at all along its own length), which reinforced the same "rigid rod" look.
+Fixed both: `taperCurve = pow(taperT, 0.35)` front-loads the thinning so the tail is already
+mostly thin shortly after leaving the head, instead of holding width until the last moment; and
+the tail's own centerline now bends sideways via `curveAmount * alongFromFront^2` (a per-instance
+`vSeed`-driven direction and magnitude, so a cluster of drips doesn't all curve the same way) —
+a real flung drip doesn't trail in a perfectly straight line. Verified on `swatch.html`: droplets
+now read as a rounded head with a genuinely curved, thinning tail, clearly distinct from both the
+straight "hay bale" look and a plain circle, with visible per-instance variety in curve
+direction.
+
+No console errors either fix. `npx tsc --noEmit` clean. The lesson from this round, stated
+plainly: a fix that touches shared rendering code (the shading pass, the shared dab shader) needs
+a real before/after comparison of ordinary, unrelated content — not just confirmation that the
+specific bug is gone — before it's safe to call done.

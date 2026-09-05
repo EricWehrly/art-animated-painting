@@ -102,21 +102,15 @@ const quadFragmentShader = /* glsl */ `
     float wideVariance = abs(hL2 - h) + abs(hR2 - h) + abs(hU2 - h) + abs(hD2 - h);
     float ao = 1.0 - clamp((variance * 1.4 + wideVariance * 0.5) * uAOStrength, 0.0, 0.82);
 
-    // The specular lobe above is tuned for stroke-mesh.ts's FINE bristle ridges (see its own
-    // comment) — lots of tiny facets, each contributing a small scattered glint. It was never
-    // meant to respond to a BROAD, smooth slope, but one can appear where two independently-
-    // moving body parts overlap with no depth test (an arm crossing the torso, say): a wide,
-    // gently-graded "ramp" between the arm's own height and the torso's underneath it, with
-    // low LOCAL variance (it's smooth, not jagged) despite real height on both sides. If that
-    // ramp's own angle happens to line up with the specular half-vector, it lights up as one
-    // broad, geometrically-clean hotspot instead of scattered glints — a "flat card" that reads
-    // as a rendering error, not paint (see docs/work/pose-pipeline.md Round 30). variance is
-    // already the fine-grained-jaggedness signal AO uses; reusing it to gate specular directly
-    // (low variance = smooth = suppress) targets exactly this mismatch without touching the
-    // scattered fine-ridge glints the lobe was actually designed for, which keep their normal
-    // high-variance surroundings untouched.
-    float specFineness = clamp(variance * 3.0, 0.0, 1.0);
-    spec *= specFineness;
+    // Round 30 tried gating specular by this same variance value (low = smooth = suppress),
+    // aimed at a real bug (a broad, flat specular "card" where two body parts overlap with no
+    // depth test — see the litMax comment below). Reverted: at normal render resolution,
+    // variance reads LOW almost everywhere, including on the fine bristle ridges the specular
+    // lobe is actually tuned for — the texel spacing is often coarser than one ridge wavelength, so
+    // single-texel differences under-sample the ridge pattern instead of catching it. The gate
+    // ended up suppressing specular broadly across the whole figure, not just the overlap case
+    // — "softer... house paint" instead of the intended crisp wet-oil glint. See
+    // docs/work/pose-pipeline.md Round 31.
 
     // Thickness shading: paint reads as paint partly because thick, freshly-loaded strokes
     // are brighter/more saturated than thin ones. Without this, height only ever shows up
